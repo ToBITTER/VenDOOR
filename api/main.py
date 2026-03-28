@@ -91,7 +91,17 @@ async def korapay_webhook_handler(request: dict, session: AsyncSession = Depends
     return await korapay_webhook.handle_korapay_webhook(request, session)
 
 
+@app.get("/webhooks/telegram")
+@app.get("/webhooks/telegram/")
+async def telegram_webhook_probe():
+    """
+    Probe endpoint for quick webhook path verification in browser/log checks.
+    """
+    return {"ok": True, "path": "/webhooks/telegram"}
+
+
 @app.post("/webhooks/telegram")
+@app.post("/webhooks/telegram/")
 async def telegram_webhook_handler(request: Request):
     """
     Telegram webhook endpoint.
