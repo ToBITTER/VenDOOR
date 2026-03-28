@@ -10,7 +10,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault
 
 from core.config import get_settings
-from db.session import init_db, close_db
+from db.session import close_db
 from bot.middlewares.db import DatabaseMiddleware
 from bot.handlers import start
 
@@ -40,13 +40,9 @@ async def set_default_commands(bot: Bot) -> None:
 
 async def on_startup(dispatcher: Dispatcher, bot: Bot) -> None:
     """
-    Called when bot starts. Initialize database and set commands.
+    Called when bot starts. Set commands and verify runtime readiness.
     """
     logger.info("Starting VenDOOR Bot...")
-    
-    # Initialize database
-    await init_db()
-    logger.info("Database initialized")
     
     # Set bot commands
     await set_default_commands(bot)

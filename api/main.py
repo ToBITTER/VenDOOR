@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
-from db.session import init_db, close_db, get_session
+from db.session import close_db, get_session
 from api.webhooks import korapay as korapay_webhook
 
 settings = get_settings()
@@ -19,10 +19,8 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """
     Lifespan context manager for FastAPI app.
-    Initializes database on startup, closes on shutdown.
+    Closes database resources on shutdown.
     """
-    # Startup
-    await init_db()
     yield
     # Shutdown
     await close_db()
