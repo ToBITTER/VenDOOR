@@ -20,13 +20,13 @@ def upgrade() -> None:
     
     # Create ENUM types
     orderstatustype = postgresql.ENUM('PENDING', 'PAID', 'COMPLETED', 'DISPUTED', 'CANCELLED', 'REFUNDED', name='orderstatus')
-    orderstatustype.create(op.get_bind())
+    orderstatustype.create(op.get_bind(), checkfirst=True)
     
     disputestatustype = postgresql.ENUM('OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED', name='disputestatus')
-    disputestatustype.create(op.get_bind())
+    disputestatustype.create(op.get_bind(), checkfirst=True)
     
     categorytype = postgresql.ENUM('IPADS', 'IPODS', 'JEWELRY', 'CLOTHES', 'ELECTRONICS', 'BOOKS', 'SHOES', 'OTHERS', name='category')
-    categorytype.create(op.get_bind())
+    categorytype.create(op.get_bind(), checkfirst=True)
     
     # Create users table
     op.create_table(
@@ -176,6 +176,6 @@ def downgrade() -> None:
     op.drop_table('users')
     
     # Drop ENUM types
-    postgresql.ENUM(name='category').drop(op.get_bind())
-    postgresql.ENUM(name='disputestatus').drop(op.get_bind())
-    postgresql.ENUM(name='orderstatus').drop(op.get_bind())
+    postgresql.ENUM(name='category').drop(op.get_bind(), checkfirst=True)
+    postgresql.ENUM(name='disputestatus').drop(op.get_bind(), checkfirst=True)
+    postgresql.ENUM(name='orderstatus').drop(op.get_bind(), checkfirst=True)
