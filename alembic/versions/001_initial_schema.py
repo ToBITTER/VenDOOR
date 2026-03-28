@@ -19,13 +19,25 @@ def upgrade() -> None:
     """Create initial database schema."""
     
     # Create ENUM types
-    orderstatustype = postgresql.ENUM('PENDING', 'PAID', 'COMPLETED', 'DISPUTED', 'CANCELLED', 'REFUNDED', name='orderstatus')
+    orderstatustype = postgresql.ENUM(
+        'PENDING', 'PAID', 'COMPLETED', 'DISPUTED', 'CANCELLED', 'REFUNDED',
+        name='orderstatus',
+        create_type=False,
+    )
     orderstatustype.create(op.get_bind(), checkfirst=True)
     
-    disputestatustype = postgresql.ENUM('OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED', name='disputestatus')
+    disputestatustype = postgresql.ENUM(
+        'OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED',
+        name='disputestatus',
+        create_type=False,
+    )
     disputestatustype.create(op.get_bind(), checkfirst=True)
     
-    categorytype = postgresql.ENUM('IPADS', 'IPODS', 'JEWELRY', 'CLOTHES', 'ELECTRONICS', 'BOOKS', 'SHOES', 'OTHERS', name='category')
+    categorytype = postgresql.ENUM(
+        'IPADS', 'IPODS', 'JEWELRY', 'CLOTHES', 'ELECTRONICS', 'BOOKS', 'SHOES', 'OTHERS',
+        name='category',
+        create_type=False,
+    )
     categorytype.create(op.get_bind(), checkfirst=True)
     
     # Create users table
