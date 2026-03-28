@@ -2,31 +2,36 @@
 Buyer catalog and product browsing handler.
 """
 
-from aiogram import Router, F
-from aiogram.types import CallbackQuery
+from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Listing, Category
-from bot.keyboards.main_menu import get_main_menu_inline, get_catalog_categories
+from bot.keyboards.main_menu import get_catalog_categories
+from db.models import Category, Listing
 
 router = Router()
 
 
+async def safe_edit_text(callback: CallbackQuery, text: str, **kwargs) -> None:
+    """
+    Avoid crashing on Telegram "message is not modified" errors.
+    """
+    try:
+        await callback.message.edit_text(text, **kwargs)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+
+
 @router.callback_query(F.data == "browse_catalog")
 async def browse_catalog(callback: CallbackQuery):
-    """
-    Show category selection for browsing.
-    """
-    text = (
-        "🛍️ <b>Browse Catalog</b>\n\n"
-        "Select a category to view available products:"
-    )
-    
-    await callback.message.edit_text(
+    text = "Browse Catalog\n\nSelect a category to view available products:"
+    await safe_edit_text(
+        callback,
         text,
-        parse_mode="HTML",
         reply_markup=get_catalog_categories(),
     )
     await callback.answer()
@@ -34,19 +39,14 @@ async def browse_catalog(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("browse_cat_"))
 async def browse_category(callback: CallbackQuery, session: AsyncSession):
-    """
-    Show products in selected category.
-    """
-    # Extract category from callback data
     category_str = callback.data.replace("browse_cat_", "").upper()
-    
+
     try:
         category = Category[category_str]
     except KeyError:
-        await callback.answer("❌ Invalid category", show_alert=True)
+        await callback.answer("Invalid category", show_alert=True)
         return
-    
-    # Fetch listings in this category
+
     result = await session.execute(
         select(Listing)
         .where(Listing.category == category)
@@ -55,44 +55,36 @@ async def browse_category(callback: CallbackQuery, session: AsyncSession):
         .limit(10)
     )
     listings = result.scalars().all()
-    
+
     if not listings:
-        await callback.message.edit_text(
-            f"📭 No products available in {category.value}.\n\n"
-            "Try another category!",
+        await safe_edit_text(
+            callback,
+            f"No products available in {category.value}.\n\nTry another category.",
             reply_markup=get_catalog_categories(),
         )
         await callback.answer()
         return
-    
-    # Show first product
+
     listing = listings[0]
     text = (
-        f"📦 <b>{listing.title}</b>\n\n"
+        f"{listing.title}\n\n"
         f"{listing.description}\n\n"
-        f"<b>Category:</b> {category.value}\n"
-        f"<b>Price:</b> ₦{listing.buyer_price:,.2f}\n"
-        f"<b>Seller:</b> {listing.seller.user.first_name}\n"
-        f"<b>Rating:</b> ⭐⭐⭐⭐⭐"
+        f"Category: {category.value}\n"
+        f"Price: NGN {listing.buyer_price:,.2f}\n"
+        f"Seller: {listing.seller.user.first_name}"
     )
-    
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Buy Now", callback_data=f"buy_listing_{listing.id}")],
-            [InlineKeyboardButton(text="👤 Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
-            [InlineKeyboardButton(text="◀️ Back to Categories", callback_data="browse_catalog")],
+            [InlineKeyboardButton(text="Buy Now", callback_data=f"buy_listing_{listing.id}")],
+            [InlineKeyboardButton(text="Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
+            [InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")],
         ]
     )
-    
-    if listing.image_url:
-        # TODO: If image_url is a Telegram file_id, send photo instead
-        pass
-    
-    await callback.message.edit_text(
+
+    await safe_edit_text(
+        callback,
         text,
-        parse_mode="HTML",
         reply_markup=keyboard,
     )
     await callback.answer()
@@ -100,24 +92,17 @@ async def browse_category(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("buy_listing_"))
 async def initiate_buy(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
-    """
-    Initiate purchase flow for a listing.
-    """
     listing_id = int(callback.data.replace("buy_listing_", ""))
-    
-    # Get listing
-    result = await session.execute(
-        select(Listing).where(Listing.id == listing_id)
-    )
+
+    result = await session.execute(select(Listing).where(Listing.id == listing_id))
     listing = result.scalars().first()
-    
+
     if not listing:
-        await callback.answer("❌ Listing not found", show_alert=True)
+        await callback.answer("Listing not found", show_alert=True)
         return
-    
-    # Store in state for checkout flow
+
     await state.update_data(listing_id=listing_id)
-    
-    # Trigger checkout FSM
+
     from bot.handlers.buyer import checkout
+
     await checkout.start_checkout(callback, state, session)
