@@ -4,13 +4,17 @@ Handles webhooks, API endpoints for payment callbacks, and administrative operat
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
+from aiogram import Bot, Dispatcher
+from aiogram.types import Update
 
 from core.config import get_settings
 from db.session import close_db, get_session
 from api.webhooks import korapay as korapay_webhook
+from bot.app import create_bot, create_dispatcher
+from bot.main import set_default_commands
 
 settings = get_settings()
 
@@ -21,8 +25,17 @@ async def lifespan(app: FastAPI):
     Lifespan context manager for FastAPI app.
     Closes database resources on shutdown.
     """
+    app.state.bot = create_bot()
+    app.state.dispatcher = create_dispatcher()
+
+    webhook_url = settings.bot_webhook_url or f"{settings.api_host.rstrip('/')}/webhooks/telegram"
+
+    await set_default_commands(app.state.bot)
+    await app.state.bot.set_webhook(webhook_url, drop_pending_updates=True)
+
     yield
     # Shutdown
+    await app.state.bot.session.close()
     await close_db()
 
 
@@ -76,6 +89,22 @@ async def korapay_webhook_handler(request: dict, session: AsyncSession = Depends
     }
     """
     return await korapay_webhook.handle_korapay_webhook(request, session)
+
+
+@app.post("/webhooks/telegram")
+async def telegram_webhook_handler(request: Request):
+    """
+    Telegram webhook endpoint.
+    Receives Telegram updates and feeds them into aiogram dispatcher.
+    """
+    bot: Bot = app.state.bot
+    dispatcher: Dispatcher = app.state.dispatcher
+
+    update_data = await request.json()
+    update = Update.model_validate(update_data)
+    await dispatcher.feed_update(bot, update)
+
+    return {"ok": True}
 
 
 # ============================================================================

@@ -5,14 +5,11 @@ Initializes aiogram dispatcher, registers handlers, and starts polling.
 
 import asyncio
 import logging
-from aiogram import Dispatcher, Bot
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, BotCommandScopeDefault
 
 from core.config import get_settings
 from db.session import close_db
-from bot.middlewares.db import DatabaseMiddleware
-from bot.handlers import start
+from bot.app import create_bot, create_dispatcher
 
 # Configure logging
 logging.basicConfig(
@@ -65,33 +62,8 @@ async def main():
     Main entry point. Initialize bot and dispatcher.
     """
     # Initialize bot and dispatcher
-    bot = Bot(token=settings.telegram_bot_token)
-    storage = MemoryStorage()  # Use Redis for production
-    dispatcher = Dispatcher(storage=storage)
-    
-    # Add middlewares
-    db_middleware = DatabaseMiddleware()
-    dispatcher.message.middleware(db_middleware)
-    dispatcher.callback_query.middleware(db_middleware)
-    
-    # Register routers
-    dispatcher.include_router(start.router)
-    
-    # Import handler modules
-    from bot.handlers.seller import register as seller_register
-    from bot.handlers.seller import listings as seller_listings
-    from bot.handlers.buyer import catalog as buyer_catalog
-    from bot.handlers.buyer import checkout as buyer_checkout
-    from bot.handlers.buyer import orders as buyer_orders
-    from bot.handlers import complaints
-    
-    # Register all routers
-    dispatcher.include_router(seller_register.router)
-    dispatcher.include_router(seller_listings.router)
-    dispatcher.include_router(buyer_catalog.router)
-    dispatcher.include_router(buyer_checkout.router)
-    dispatcher.include_router(buyer_orders.router)
-    dispatcher.include_router(complaints.router)
+    bot = create_bot()
+    dispatcher = create_dispatcher()
     
     # Set startup/shutdown handlers
     dispatcher.startup.register(lambda disp: on_startup(disp, bot))
