@@ -5,6 +5,7 @@ Initializes aiogram dispatcher, registers handlers, and starts polling.
 
 import asyncio
 import logging
+from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand, BotCommandScopeDefault
 
 from core.config import get_settings
