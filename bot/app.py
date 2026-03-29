@@ -15,6 +15,7 @@ from bot.handlers.buyer import catalog as buyer_catalog
 from bot.handlers.buyer import checkout as buyer_checkout
 from bot.handlers.buyer import orders as buyer_orders
 from bot.handlers import complaints
+from bot.handlers import admin as admin_handlers
 
 settings = get_settings()
 
@@ -38,5 +39,6 @@ def create_dispatcher() -> Dispatcher:
     dispatcher.include_router(buyer_checkout.router)
     dispatcher.include_router(buyer_orders.router)
     dispatcher.include_router(complaints.router)
+    dispatcher.include_router(admin_handlers.router)
 
     return dispatcher

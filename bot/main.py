@@ -6,7 +6,7 @@ Initializes aiogram dispatcher, registers handlers, and starts polling.
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
-from aiogram.types import BotCommand, BotCommandScopeDefault
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 
 from core.config import get_settings
 from db.session import close_db
@@ -34,6 +34,15 @@ async def set_default_commands(bot: Bot) -> None:
         BotCommand(command="sell", description="Register as seller"),
     ]
     await bot.set_my_commands(commands, BotCommandScopeDefault())
+
+    if settings.admin_telegram_id:
+        admin_commands = [
+            BotCommand(command="pending_sellers", description="Review pending seller approvals"),
+        ]
+        await bot.set_my_commands(
+            admin_commands,
+            BotCommandScopeChat(chat_id=int(settings.admin_telegram_id)),
+        )
 
 
 async def on_startup(dispatcher: Dispatcher, bot: Bot) -> None:
