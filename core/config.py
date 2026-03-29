@@ -40,6 +40,7 @@ class Settings(BaseSettings):
 
     # Admin Settings
     admin_telegram_id: str | None = None
+    admin_api_key: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

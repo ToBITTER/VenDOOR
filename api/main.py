@@ -6,12 +6,13 @@ Handles webhooks, API endpoints for payment callbacks, and administrative operat
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
 from sqlalchemy import func, select
+from sqlalchemy.orm import joinedload
 
 from core.config import get_settings
 from db.session import close_db, get_session
@@ -21,6 +22,22 @@ from bot.main import set_default_commands
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+def require_admin(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
+    """
+    Lightweight admin gate for operational endpoints.
+    """
+    if not settings.admin_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin API key is not configured",
+        )
+    if x_admin_key != settings.admin_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin credentials",
+        )
 
 
 async def _configure_bot(bot: Bot) -> None:
@@ -211,6 +228,120 @@ async def admin_stats(session: AsyncSession = Depends(get_session)):
         "verified_sellers": stats.verified_sellers or 0,
         "active_listings": stats.active_listings or 0,
     }
+
+
+@app.get("/admin/sellers/pending")
+async def list_pending_seller_verifications(
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    List sellers waiting for manual admin verification.
+    """
+    from db.models import SellerProfile, User
+
+    result = await session.execute(
+        select(SellerProfile)
+        .options(joinedload(SellerProfile.user))
+        .where(SellerProfile.verified.is_(False))
+        .order_by(SellerProfile.created_at.asc())
+    )
+    sellers = result.scalars().all()
+
+    return {
+        "count": len(sellers),
+        "pending_sellers": [
+            {
+                "seller_id": seller.id,
+                "user_id": seller.user_id,
+                "telegram_id": seller.user.telegram_id if seller.user else None,
+                "name": f"{seller.user.first_name} {seller.user.last_name or ''}".strip()
+                if seller.user
+                else None,
+                "username": seller.user.username if seller.user else None,
+                "is_student": seller.is_student,
+                "student_email": seller.student_email,
+                "id_document_url": seller.id_document_url,
+                "bank_code": seller.bank_code,
+                "account_number": seller.account_number,
+                "account_name": seller.account_name,
+                "created_at": seller.created_at.isoformat(),
+            }
+            for seller in sellers
+        ],
+    }
+
+
+@app.post("/admin/sellers/{seller_id}/approve")
+async def approve_seller_verification(
+    seller_id: int,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Approve a pending seller and notify them in Telegram.
+    """
+    from db.models import SellerProfile
+
+    result = await session.execute(
+        select(SellerProfile).options(joinedload(SellerProfile.user)).where(SellerProfile.id == seller_id)
+    )
+    seller = result.scalars().first()
+    if not seller:
+        raise HTTPException(status_code=404, detail="Seller not found")
+
+    seller.verified = True
+    await session.commit()
+
+    if seller.user and seller.user.telegram_id:
+        try:
+            await app.state.bot.send_message(
+                chat_id=int(seller.user.telegram_id),
+                text=(
+                    "Your seller account has been verified.\n\n"
+                    "You can now create listings and start selling on VenDOOR."
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to notify seller %s after approval", seller.id)
+
+    return {"ok": True, "seller_id": seller.id, "verified": seller.verified}
+
+
+@app.post("/admin/sellers/{seller_id}/reject")
+async def reject_seller_verification(
+    seller_id: int,
+    reason: str | None = None,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Reject a pending seller application and notify them.
+    Rejection keeps profile but sets verified=False.
+    """
+    from db.models import SellerProfile
+
+    result = await session.execute(
+        select(SellerProfile).options(joinedload(SellerProfile.user)).where(SellerProfile.id == seller_id)
+    )
+    seller = result.scalars().first()
+    if not seller:
+        raise HTTPException(status_code=404, detail="Seller not found")
+
+    seller.verified = False
+    await session.commit()
+
+    if seller.user and seller.user.telegram_id:
+        try:
+            message = "Your seller verification was not approved yet."
+            if reason:
+                message += f"\n\nReason: {reason}"
+            message += "\n\nPlease update your details and try again."
+            await app.state.bot.send_message(chat_id=int(seller.user.telegram_id), text=message)
+        except Exception:
+            logger.exception("Failed to notify seller %s after rejection", seller.id)
+
+    return {"ok": True, "seller_id": seller.id, "verified": seller.verified, "reason": reason}
 
 
 if __name__ == "__main__":
