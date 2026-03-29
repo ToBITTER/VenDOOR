@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
+from aiogram.exceptions import TelegramBadRequest
 
 from core.config import get_settings
 from db.session import close_db, get_session
@@ -112,7 +113,11 @@ async def telegram_webhook_handler(request: Request):
 
     update_data = await request.json()
     update = Update.model_validate(update_data)
-    await dispatcher.feed_update(bot, update)
+    try:
+        await dispatcher.feed_update(bot, update)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
 
     return {"ok": True}
 
