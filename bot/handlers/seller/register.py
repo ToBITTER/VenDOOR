@@ -13,9 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from bot.keyboards.main_menu import get_confirmation_keyboard, get_main_menu_inline
+from core.config import get_settings
 from db.models import SellerProfile, User
 
 router = Router()
+settings = get_settings()
 
 
 class SellerRegistrationStates(StatesGroup):
@@ -99,10 +101,10 @@ async def handle_student_no(callback: CallbackQuery, state: FSMContext):
 
 @router.message(SellerRegistrationStates.awaiting_student_email)
 async def handle_student_email(message: Message, state: FSMContext):
-    email = message.text.strip()
+    email = message.text.strip().lower()
 
-    if "@" not in email or "." not in email:
-        await message.reply("Please enter a valid email address.")
+    if not email.endswith("@stu.cu.edu.ng"):
+        await message.reply("Use your CU student email ending with @stu.cu.edu.ng.")
         return
 
     await state.update_data(student_email=email)
@@ -227,6 +229,19 @@ async def confirm_seller_registration(callback: CallbackQuery, state: FSMContext
         )
 
         await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=get_main_menu_inline())
+
+        if settings.admin_telegram_id:
+            try:
+                await callback.bot.send_message(
+                    chat_id=int(settings.admin_telegram_id),
+                    text=(
+                        "New seller registration pending review.\n"
+                        f"Seller ID: {seller.id}\n"
+                        "Use /pending_sellers to review."
+                    ),
+                )
+            except Exception:
+                pass
 
     except Exception as e:
         await session.rollback()
