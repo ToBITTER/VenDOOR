@@ -23,6 +23,19 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
+async def _configure_bot(bot: Bot) -> None:
+    """
+    Configure bot commands and webhook without blocking API startup.
+    """
+    webhook_url = settings.bot_webhook_url or f"{settings.api_host.rstrip('/')}/webhooks/telegram"
+    try:
+        await set_default_commands(bot)
+        await bot.set_webhook(webhook_url, drop_pending_updates=True)
+        logger.info("Telegram webhook configured: %s", webhook_url)
+    except Exception:
+        logger.exception("Failed to configure Telegram webhook/commands at startup")
+
+
 async def _run_update(dispatcher: Dispatcher, bot: Bot, update: Update) -> None:
     try:
         await dispatcher.feed_update(bot, update)
@@ -38,14 +51,13 @@ async def lifespan(app: FastAPI):
     """
     app.state.bot = create_bot()
     app.state.dispatcher = create_dispatcher()
-
-    webhook_url = settings.bot_webhook_url or f"{settings.api_host.rstrip('/')}/webhooks/telegram"
-
-    await set_default_commands(app.state.bot)
-    await app.state.bot.set_webhook(webhook_url, drop_pending_updates=True)
+    app.state.bot_setup_task = asyncio.create_task(_configure_bot(app.state.bot))
 
     yield
     # Shutdown
+    bot_setup_task = getattr(app.state, "bot_setup_task", None)
+    if bot_setup_task and not bot_setup_task.done():
+        bot_setup_task.cancel()
     await app.state.bot.session.close()
     await close_db()
 
@@ -76,6 +88,12 @@ app.add_middleware(
 async def health_check():
     """Health check endpoint."""
     return {"status": "ok", "service": "vendoor-api"}
+
+
+@app.get("/")
+async def root():
+    """Root endpoint for platform probes."""
+    return {"status": "ok", "service": "vendoor-api", "health": "/health"}
 
 
 # ============================================================================

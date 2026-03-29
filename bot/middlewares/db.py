@@ -4,12 +4,16 @@ Injects an async SQLAlchemy session into every handler for database access.
 """
 
 from typing import Any, Callable, Dict, Awaitable
+import logging
 
 from aiogram import BaseMiddleware
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message, Update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.session import create_session_maker, create_engine
+
+logger = logging.getLogger(__name__)
 
 
 class DatabaseMiddleware(BaseMiddleware):
@@ -48,6 +52,13 @@ class DatabaseMiddleware(BaseMiddleware):
             data["session"] = session
             try:
                 return await handler(event, data)
+            except TelegramBadRequest as exc:
+                # Telegram rejects no-op edits with "message is not modified".
+                # Treat this as benign so callbacks do not crash webhook/polling flows.
+                if "message is not modified" in str(exc).lower():
+                    logger.info("Ignored Telegram no-op edit: %s", exc)
+                    return None
+                raise
             finally:
                 await session.close()
 
