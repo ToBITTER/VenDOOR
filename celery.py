@@ -34,7 +34,7 @@ app.conf.task_soft_time_limit = 25 * 60  # 25 minutes (soft limit before hard ki
 app.conf.beat_schedule = {
     "check-pending-escrows": {
         "task": "tasks.escrow_release.check_pending_escrows",
-        "schedule": crontab(minute=0),  # Every hour
+        "schedule": crontab(minute=0),  # Every hour at minute 0
     },
     "send-pending-notifications": {
         "task": "tasks.notifications.send_pending_notifications",
@@ -43,6 +43,6 @@ app.conf.beat_schedule = {
 }
 
 # Import tasks to register them
-from tasks import escrow_release
+from tasks import escrow_release, notifications
 
 __all__ = ["app"]

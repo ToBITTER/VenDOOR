@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: campusmart-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: alembic upgrade head
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: CELERY_BROKER_URL
+        sync: false
+      - key: CELERY_RESULT_BACKEND
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: KORAPAY_PUBLIC_KEY
+        sync: false
+      - key: KORAPAY_SECRET_KEY
+        sync: false
+      - key: API_HOST
+        sync: false
+      - key: BOT_WEBHOOK_URL
+        sync: false
+      - key: DEBUG
+        value: "False"
