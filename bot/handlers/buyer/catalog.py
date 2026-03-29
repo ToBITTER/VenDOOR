@@ -3,38 +3,28 @@ Buyer catalog and product browsing handler.
 """
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
+from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from bot.keyboards.main_menu import get_catalog_categories
-from db.models import Category, Listing
+from db.models import Category, Listing, SellerProfile
 
 router = Router()
 
 
-async def safe_edit_text(callback: CallbackQuery, text: str, **kwargs) -> None:
-    """
-    Avoid crashing on Telegram "message is not modified" errors.
-    """
-    try:
-        await callback.message.edit_text(text, **kwargs)
-    except TelegramBadRequest as exc:
-        if "message is not modified" not in str(exc).lower():
-            raise
-
-
 @router.callback_query(F.data == "browse_catalog")
 async def browse_catalog(callback: CallbackQuery):
+    await safe_answer_callback(callback)
     text = "Browse Catalog\n\nSelect a category to view available products:"
     await safe_edit_text(
         callback,
         text,
         reply_markup=get_catalog_categories(),
     )
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("browse_cat_"))
@@ -44,11 +34,13 @@ async def browse_category(callback: CallbackQuery, session: AsyncSession):
     try:
         category = Category[category_str]
     except KeyError:
-        await callback.answer("Invalid category", show_alert=True)
+        await safe_answer_callback(callback, text="Invalid category", show_alert=True)
         return
+    await safe_answer_callback(callback)
 
     result = await session.execute(
         select(Listing)
+        .options(joinedload(Listing.seller).joinedload(SellerProfile.user))
         .where(Listing.category == category)
         .where(Listing.available == True)
         .order_by(Listing.created_at.desc())
@@ -62,7 +54,6 @@ async def browse_category(callback: CallbackQuery, session: AsyncSession):
             f"No products available in {category.value}.\n\nTry another category.",
             reply_markup=get_catalog_categories(),
         )
-        await callback.answer()
         return
 
     listing = listings[0]
@@ -87,7 +78,6 @@ async def browse_category(callback: CallbackQuery, session: AsyncSession):
         text,
         reply_markup=keyboard,
     )
-    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("buy_listing_"))
@@ -98,9 +88,10 @@ async def initiate_buy(callback: CallbackQuery, state: FSMContext, session: Asyn
     listing = result.scalars().first()
 
     if not listing:
-        await callback.answer("Listing not found", show_alert=True)
+        await safe_answer_callback(callback, text="Listing not found", show_alert=True)
         return
 
+    await safe_answer_callback(callback)
     await state.update_data(listing_id=listing_id)
 
     from bot.handlers.buyer import checkout

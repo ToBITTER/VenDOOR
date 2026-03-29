@@ -5,7 +5,6 @@ Seller listings handler - create and view listings.
 from decimal import Decimal, ROUND_CEILING
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -13,6 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from bot.keyboards.main_menu import get_main_menu_inline, get_seller_actions
 from db.models import Category, Listing, SellerProfile, User
 
@@ -27,21 +27,14 @@ class ListingStates(StatesGroup):
     confirming_listing = State()
 
 
-async def safe_edit_text(callback: CallbackQuery, text: str, **kwargs) -> None:
-    try:
-        await callback.message.edit_text(text, **kwargs)
-    except TelegramBadRequest as exc:
-        if "message is not modified" not in str(exc).lower():
-            raise
-
-
 @router.callback_query(F.data == "seller_listings")
 async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
+    await safe_answer_callback(callback)
     user_id_str = str(callback.from_user.id)
     result = await session.execute(select(User).where(User.telegram_id == user_id_str))
     user = result.scalars().first()
     if not user:
-        await callback.answer("User not found", show_alert=True)
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
         return
 
     result = await session.execute(select(SellerProfile).where(SellerProfile.user_id == user.id))
@@ -52,7 +45,6 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
             "You are not registered as a seller.\n\nRegister now to start selling.",
             reply_markup=get_main_menu_inline(),
         )
-        await callback.answer()
         return
 
     result = await session.execute(
@@ -65,7 +57,6 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
             "You have not created any listings yet.\n\nCreate your first listing now.",
             reply_markup=get_seller_actions(),
         )
-        await callback.answer()
         return
 
     text = "<b>My Listings</b>\n\n"
@@ -85,11 +76,11 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
         ]
     )
     await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
-    await callback.answer()
 
 
 @router.callback_query(F.data == "seller_create_listing")
 async def start_create_listing(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await safe_answer_callback(callback)
     user_id_str = str(callback.from_user.id)
     result = await session.execute(
         select(SellerProfile).join(User).where(User.telegram_id == user_id_str)
@@ -102,7 +93,6 @@ async def start_create_listing(callback: CallbackQuery, state: FSMContext, sessi
             "You must be registered as a seller first.",
             reply_markup=get_main_menu_inline(),
         )
-        await callback.answer()
         return
 
     if not seller.verified:
@@ -112,7 +102,6 @@ async def start_create_listing(callback: CallbackQuery, state: FSMContext, sessi
             "You can create listings after verification.",
             reply_markup=get_seller_actions(),
         )
-        await callback.answer()
         return
 
     await state.update_data(seller_id=seller.id)
@@ -122,7 +111,6 @@ async def start_create_listing(callback: CallbackQuery, state: FSMContext, sessi
         parse_mode="HTML",
     )
     await state.set_state(ListingStates.awaiting_title)
-    await callback.answer()
 
 
 @router.message(ListingStates.awaiting_title)
@@ -166,11 +154,12 @@ async def handle_listing_description(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("cat_"), StateFilter(ListingStates.awaiting_category))
 async def handle_listing_category(callback: CallbackQuery, state: FSMContext):
+    await safe_answer_callback(callback)
     category_str = callback.data.replace("cat_", "").upper()
     try:
         category = Category[category_str]
     except KeyError:
-        await callback.answer("Invalid category", show_alert=True)
+        await safe_answer_callback(callback, text="Invalid category", show_alert=True)
         return
 
     await state.update_data(category=category)
@@ -180,7 +169,6 @@ async def handle_listing_category(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
     )
     await state.set_state(ListingStates.awaiting_base_price)
-    await callback.answer()
 
 
 @router.message(ListingStates.awaiting_base_price)
@@ -220,6 +208,7 @@ async def handle_listing_price(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "listing_confirm", StateFilter(ListingStates.confirming_listing))
 async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await safe_answer_callback(callback)
     data = await state.get_data()
     try:
         listing = Listing(
@@ -248,4 +237,3 @@ async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, s
         await safe_edit_text(callback, f"Error: {e}", reply_markup=get_seller_actions())
 
     await state.clear()
-    await callback.answer()

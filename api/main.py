@@ -3,13 +3,15 @@ FastAPI application for VenDOOR Marketplace Bot.
 Handles webhooks, API endpoints for payment callbacks, and administrative operations.
 """
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
-from aiogram.exceptions import TelegramBadRequest
+from sqlalchemy import func, select
 
 from core.config import get_settings
 from db.session import close_db, get_session
@@ -18,6 +20,14 @@ from bot.app import create_bot, create_dispatcher
 from bot.main import set_default_commands
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+async def _run_update(dispatcher: Dispatcher, bot: Bot, update: Update) -> None:
+    try:
+        await dispatcher.feed_update(bot, update)
+    except Exception:
+        logger.exception("Unhandled exception while processing Telegram update")
 
 
 @asynccontextmanager
@@ -113,11 +123,8 @@ async def telegram_webhook_handler(request: Request):
 
     update_data = await request.json()
     update = Update.model_validate(update_data)
-    try:
-        await dispatcher.feed_update(bot, update)
-    except TelegramBadRequest as exc:
-        if "message is not modified" not in str(exc).lower():
-            raise
+    # Process update in background so webhook responds quickly to Telegram.
+    asyncio.create_task(_run_update(dispatcher, bot, update))
 
     return {"ok": True}
 
@@ -132,11 +139,9 @@ async def get_order_status(order_id: int, session: AsyncSession = Depends(get_se
     Get order status by order ID.
     Used by bot to check payment status after timeout.
     """
-    from sqlalchemy import select
     from db.models import Order
     
-    result = await session.execute(select(Order).where(Order.id == order_id))
-    order = result.scalars().first()
+    order = await session.get(Order, order_id)
     
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -159,36 +164,34 @@ async def admin_stats(session: AsyncSession = Depends(get_session)):
     Get marketplace statistics (orders, sellers, etc).
     Should be protected with authentication in production.
     """
-    from sqlalchemy import func
-    from db.models import Order, OrderStatus, SellerProfile, Listing
-    
-    # Total orders
-    result = await session.execute(func.count(Order.id).select())
-    total_orders = result.scalar() or 0
-    
-    # Completed orders
-    result = await session.execute(
-        func.count(Order.id).select().where(Order.status == OrderStatus.COMPLETED)
+    from db.models import Listing, Order, OrderStatus, SellerProfile
+
+    total_orders_sq = select(func.count(Order.id)).scalar_subquery()
+    completed_orders_sq = (
+        select(func.count(Order.id)).where(Order.status == OrderStatus.COMPLETED).scalar_subquery()
     )
-    completed_orders = result.scalar() or 0
-    
-    # Verified sellers
-    result = await session.execute(
-        func.count(SellerProfile.id).select().where(SellerProfile.verified == True)
+    verified_sellers_sq = (
+        select(func.count(SellerProfile.id)).where(SellerProfile.verified.is_(True)).scalar_subquery()
     )
-    verified_sellers = result.scalar() or 0
-    
-    # Active listings
-    result = await session.execute(
-        func.count(Listing.id).select().where(Listing.available == True)
+    active_listings_sq = (
+        select(func.count(Listing.id)).where(Listing.available.is_(True)).scalar_subquery()
     )
-    active_listings = result.scalar() or 0
+
+    result = await session.execute(
+        select(
+            total_orders_sq.label("total_orders"),
+            completed_orders_sq.label("completed_orders"),
+            verified_sellers_sq.label("verified_sellers"),
+            active_listings_sq.label("active_listings"),
+        )
+    )
+    stats = result.one()
     
     return {
-        "total_orders": total_orders,
-        "completed_orders": completed_orders,
-        "verified_sellers": verified_sellers,
-        "active_listings": active_listings,
+        "total_orders": stats.total_orders or 0,
+        "completed_orders": stats.completed_orders or 0,
+        "verified_sellers": stats.verified_sellers or 0,
+        "active_listings": stats.active_listings or 0,
     }
 
 

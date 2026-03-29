@@ -2,180 +2,169 @@
 Buyer orders handler - view orders, confirm receipt, raise disputes.
 """
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from db.models import Order, User, OrderStatus
-from bot.keyboards.main_menu import get_order_actions, get_main_menu_inline
+from bot.helpers.telegram import safe_answer_callback, safe_edit_text
+from bot.keyboards.main_menu import get_main_menu_inline, get_order_actions
+from db.models import Order, OrderStatus, SellerProfile, User
 
 router = Router()
 
 
 @router.callback_query(F.data == "my_orders")
 async def my_orders(callback: CallbackQuery, session: AsyncSession):
-    """
-    Show user's orders.
-    """
     buyer_id_str = str(callback.from_user.id)
-    
-    # Get user
-    result = await session.execute(
-        select(User).where(User.telegram_id == buyer_id_str)
-    )
+
+    result = await session.execute(select(User).where(User.telegram_id == buyer_id_str))
     user = result.scalars().first()
-    
     if not user:
-        await callback.answer("User not found", show_alert=True)
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
         return
-    
-    # Get orders
+
+    await safe_answer_callback(callback)
+
     result = await session.execute(
         select(Order)
+        .options(selectinload(Order.listing))
         .where(Order.buyer_id == user.id)
         .order_by(Order.created_at.desc())
     )
     orders = result.scalars().all()
-    
+
     if not orders:
-        await callback.message.edit_text(
-            "📭 You haven't placed any orders yet.\n\n"
-            "Start shopping now!",
+        await safe_edit_text(
+            callback,
+            "You have not placed any orders yet.\n\nStart shopping now!",
             reply_markup=get_main_menu_inline(),
         )
-        await callback.answer()
         return
-    
-    # Build orders list
-    text = "📦 <b>Your Orders</b>\n\n"
-    for order in orders[:5]:  # Show last 5 orders
+
+    text = "<b>Your Orders</b>\n\n"
+    for order in orders[:5]:
         status_emoji = {
-            OrderStatus.PENDING: "⏳",
-            OrderStatus.PAID: "💳",
-            OrderStatus.COMPLETED: "✅",
-            OrderStatus.DISPUTED: "⚠️",
-            OrderStatus.CANCELLED: "❌",
-            OrderStatus.REFUNDED: "💰",
-        }.get(order.status, "❓")
-        
+            OrderStatus.PENDING: "PENDING",
+            OrderStatus.PAID: "PAID",
+            OrderStatus.COMPLETED: "COMPLETED",
+            OrderStatus.DISPUTED: "DISPUTED",
+            OrderStatus.CANCELLED: "CANCELLED",
+            OrderStatus.REFUNDED: "REFUNDED",
+        }.get(order.status, "UNKNOWN")
+
         text += (
-            f"{status_emoji} <b>Order #{order.id}</b>\n"
-            f"  Product: {order.listing.title}\n"
-            f"  Amount: ₦{order.amount:,.2f}\n"
-            f"  Status: {order.status.value}\n"
-            f"  Date: {order.created_at.strftime('%d/%m/%Y')}\n\n"
+            f"<b>Order #{order.id}</b>\n"
+            f"Product: {order.listing.title}\n"
+            f"Amount: NGN {order.amount:,.2f}\n"
+            f"Status: {status_emoji}\n"
+            f"Date: {order.created_at.strftime('%d/%m/%Y')}\n\n"
         )
-    
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    
+
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=f"Order #{orders[0].id}", callback_data=f"view_order_{orders[0].id}")],
-            [InlineKeyboardButton(text="◀️ Back", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back", callback_data="back_to_menu")],
         ]
     )
-    
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
-    await callback.answer()
+
+    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("view_order_"))
 async def view_order(callback: CallbackQuery, session: AsyncSession):
-    """
-    View order details.
-    """
     order_id = int(callback.data.replace("view_order_", ""))
-    
-    user_result = await session.execute(
-        select(User).where(User.telegram_id == str(callback.from_user.id))
-    )
+
+    user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
     user = user_result.scalars().first()
     if not user:
-        await callback.answer("User not found", show_alert=True)
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
         return
 
-    result = await session.execute(select(Order).where(Order.id == order_id))
+    result = await session.execute(
+        select(Order)
+        .options(
+            selectinload(Order.listing),
+            selectinload(Order.seller).selectinload(SellerProfile.user),
+        )
+        .where(Order.id == order_id)
+    )
     order = result.scalars().first()
-    
+
     if not order:
-        await callback.answer("Order not found", show_alert=True)
+        await safe_answer_callback(callback, text="Order not found", show_alert=True)
         return
 
     if order.buyer_id != user.id:
-        await callback.answer("You can only view your own orders", show_alert=True)
+        await safe_answer_callback(callback, text="You can only view your own orders", show_alert=True)
         return
-    
+
+    await safe_answer_callback(callback)
+
     text = (
-        f"📦 <b>Order #{order.id}</b>\n\n"
+        f"<b>Order #{order.id}</b>\n\n"
         f"<b>Product:</b> {order.listing.title}\n"
         f"<b>Seller:</b> {order.seller.user.first_name}\n"
-        f"<b>Amount:</b> ₦{order.amount:,.2f}\n"
+        f"<b>Amount:</b> NGN {order.amount:,.2f}\n"
         f"<b>Status:</b> {order.status.value}\n\n"
         f"<b>Delivery Address:</b>\n{order.buyer_address}\n"
     )
-    
+
     if order.buyer_delivery_details:
         text += f"\n<b>Special Instructions:</b>\n{order.buyer_delivery_details}\n"
-    
+
     text += f"\n<b>Date:</b> {order.created_at.strftime('%d/%m/%Y %H:%M')}"
-    
-    await callback.message.edit_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=get_order_actions(order.id),
-    )
-    await callback.answer()
+
+    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=get_order_actions(order.id))
 
 
 @router.callback_query(F.data.startswith("order_confirm_"))
 async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
-    """
-    Confirm receipt - release escrow to seller.
-    """
     order_id = int(callback.data.replace("order_confirm_", ""))
-    
-    user_result = await session.execute(
-        select(User).where(User.telegram_id == str(callback.from_user.id))
-    )
+
+    user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
     user = user_result.scalars().first()
     if not user:
-        await callback.answer("User not found", show_alert=True)
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
         return
 
     result = await session.execute(select(Order).where(Order.id == order_id))
     order = result.scalars().first()
-    
+
     if not order:
-        await callback.answer("Order not found", show_alert=True)
+        await safe_answer_callback(callback, text="Order not found", show_alert=True)
         return
 
     if order.buyer_id != user.id:
-        await callback.answer("You can only confirm your own orders", show_alert=True)
+        await safe_answer_callback(callback, text="You can only confirm your own orders", show_alert=True)
         return
-    
+
     if order.status != OrderStatus.PAID:
-        await callback.answer(
-            f"Cannot confirm receipt. Order status is {order.status.value}",
-            show_alert=True
+        await safe_answer_callback(
+            callback,
+            text=f"Cannot confirm receipt. Order status is {order.status.value}",
+            show_alert=True,
         )
         return
-    
+
+    await safe_answer_callback(callback)
+
     try:
-        # Update order status
         order.status = OrderStatus.COMPLETED
         await session.commit()
-        
-        await callback.message.edit_text(
-            f"✅ <b>Receipt Confirmed!</b>\n\n"
-            f"Thank you for shopping with VenDOOR.\n"
-            f"Seller has been paid ₦{order.amount:,.2f}\n\n"
+
+        await safe_edit_text(
+            callback,
+            "<b>Receipt Confirmed</b>\n\n"
+            "Thank you for shopping with VenDOOR.\n"
+            f"Seller has been paid NGN {order.amount:,.2f}\n\n"
             f"Order #{order.id} complete.",
             parse_mode="HTML",
             reply_markup=get_main_menu_inline(),
         )
     except Exception as e:
         await session.rollback()
-        await callback.message.edit_text(f"❌ Error: {str(e)}")
-    
-    await callback.answer()
+        await safe_edit_text(callback, f"Error: {e}")

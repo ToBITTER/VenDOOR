@@ -9,6 +9,7 @@ from aiogram.filters import Command, CommandStart
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from db.models import User
 from bot.keyboards.main_menu import get_main_menu_inline
 
@@ -68,12 +69,8 @@ async def back_to_menu_handler(callback: CallbackQuery):
         "What would you like to do?"
     )
     
-    await callback.message.edit_text(
-        welcome_text,
-        parse_mode="HTML",
-        reply_markup=get_main_menu_inline(),
-    )
-    await callback.answer()
+    await safe_answer_callback(callback)
+    await safe_edit_text(callback, welcome_text, parse_mode="HTML", reply_markup=get_main_menu_inline())
 
 
 @router.callback_query(F.data == "help")
@@ -103,9 +100,5 @@ async def help_handler(callback: CallbackQuery):
         "Raise a dispute from your orders.\n"
     )
     
-    await callback.message.edit_text(
-        help_text,
-        parse_mode="HTML",
-        reply_markup=get_main_menu_inline(),
-    )
-    await callback.answer()
+    await safe_answer_callback(callback)
+    await safe_edit_text(callback, help_text, parse_mode="HTML", reply_markup=get_main_menu_inline())
