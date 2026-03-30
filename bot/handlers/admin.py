@@ -8,6 +8,9 @@ import re
 from aiogram import F, Router
 from aiogram.exceptions import TelegramRetryAfter
 from aiogram.filters import Command
+from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,10 +18,17 @@ from sqlalchemy.orm import joinedload
 
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from core.config import get_settings
-from db.models import Order, SellerProfile, User
+from db.models import Listing, Order, SellerProfile, User
 
 router = Router()
 settings = get_settings()
+
+
+class AdminStates(StatesGroup):
+    awaiting_broadcast_message = State()
+    awaiting_privilege_seller_id = State()
+    awaiting_privilege_featured = State()
+    awaiting_privilege_priority = State()
 
 
 def _is_admin(telegram_user_id: int) -> bool:
@@ -72,6 +82,40 @@ def _delete_help_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
             [InlineKeyboardButton(text="Back", callback_data="back_to_menu")],
+        ]
+    )
+
+
+def _delete_picker_keyboard(items: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text=label, callback_data=cb)] for label, cb in items]
+    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    rows.append([InlineKeyboardButton(text="Back", callback_data="back_to_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _broadcast_audience_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="All Users", callback_data="admin_broadcast_audience_all")],
+            [InlineKeyboardButton(text="Buyers Only", callback_data="admin_broadcast_audience_buyers")],
+            [InlineKeyboardButton(text="Sellers Only", callback_data="admin_broadcast_audience_sellers")],
+            [
+                InlineKeyboardButton(
+                    text="Verified Sellers",
+                    callback_data="admin_broadcast_audience_verified_sellers",
+                )
+            ],
+            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
+        ]
+    )
+
+
+def _privilege_featured_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Featured: ON", callback_data="admin_priv_featured_1")],
+            [InlineKeyboardButton(text="Featured: OFF", callback_data="admin_priv_featured_0")],
+            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
         ]
     )
 
@@ -245,11 +289,62 @@ async def _render_listings_text(session: AsyncSession, limit: int = 10) -> str:
     return text
 
 
+async def _get_broadcast_recipient_ids(session: AsyncSession, audience: str) -> list[str]:
+    if audience == "all":
+        recipients_query = select(User.telegram_id).where(User.telegram_id.is_not(None)).distinct()
+    elif audience == "buyers":
+        recipients_query = (
+            select(User.telegram_id)
+            .join(Order, Order.buyer_id == User.id)
+            .where(User.telegram_id.is_not(None))
+            .distinct()
+        )
+    elif audience == "sellers":
+        recipients_query = (
+            select(User.telegram_id)
+            .join(SellerProfile, SellerProfile.user_id == User.id)
+            .where(User.telegram_id.is_not(None))
+            .distinct()
+        )
+    else:
+        recipients_query = (
+            select(User.telegram_id)
+            .join(SellerProfile, SellerProfile.user_id == User.id)
+            .where(SellerProfile.verified.is_(True))
+            .where(User.telegram_id.is_not(None))
+            .distinct()
+        )
+
+    recipient_result = await session.execute(recipients_query)
+    return [row[0] for row in recipient_result.all() if row[0]]
+
+
+async def _send_broadcast(bot, recipient_ids: list[str], message_text: str) -> tuple[int, int]:
+    sent = 0
+    failed = 0
+    for telegram_id in recipient_ids:
+        try:
+            chat_id = int(telegram_id)
+            await bot.send_message(chat_id=chat_id, text=message_text)
+            sent += 1
+        except TelegramRetryAfter as exc:
+            try:
+                await asyncio.sleep(exc.retry_after)
+                await bot.send_message(chat_id=chat_id, text=message_text)
+                sent += 1
+            except Exception:
+                failed += 1
+        except Exception:
+            failed += 1
+    return sent, failed
+
+
 @router.message(Command("admin_tools"))
-async def admin_tools(message: Message):
+async def admin_tools(message: Message, state: FSMContext):
     if not _is_admin(message.from_user.id):
         await message.reply("You are not authorized to use this command.")
         return
+    await state.clear()
 
     text = (
         "<b>Admin Tools</b>\n\n"
@@ -498,11 +593,12 @@ async def broadcast_from_admin_chat(message: Message, session: AsyncSession):
 
 
 @router.callback_query(F.data == "admin_tools_open")
-async def open_admin_tools(callback: CallbackQuery):
+async def open_admin_tools(callback: CallbackQuery, state: FSMContext):
     if not _is_admin(callback.from_user.id):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
+    await state.clear()
     text = (
         "<b>Admin Tools</b>\n\n"
         "Available buttons:\n"
@@ -562,8 +658,121 @@ async def admin_listings(callback: CallbackQuery, session: AsyncSession):
     await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
 
 
+@router.callback_query(F.data.startswith("admin_delete_listing_"))
+async def delete_listing_by_button(callback: CallbackQuery, session: AsyncSession):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    listing_id = int(callback.data.replace("admin_delete_listing_", ""))
+    listing = await session.get(Listing, listing_id)
+    if not listing:
+        await safe_edit_text(callback, "Listing not found.", reply_markup=_delete_help_keyboard())
+        return
+
+    order_count_result = await session.execute(
+        select(func.count(Order.id)).where(Order.listing_id == listing_id)
+    )
+    if (order_count_result.scalar() or 0) > 0:
+        await safe_edit_text(
+            callback,
+            "Cannot delete listing with existing transactions.",
+            reply_markup=_delete_help_keyboard(),
+        )
+        return
+
+    await session.delete(listing)
+    await session.commit()
+    await safe_edit_text(
+        callback,
+        f"Listing {listing_id} deleted.",
+        reply_markup=_delete_help_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("admin_delete_vendor_"))
+async def delete_vendor_by_button(callback: CallbackQuery, session: AsyncSession):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    seller_id = int(callback.data.replace("admin_delete_vendor_", ""))
+    seller = await session.get(SellerProfile, seller_id)
+    if not seller:
+        await safe_edit_text(callback, "Vendor not found.", reply_markup=_delete_help_keyboard())
+        return
+
+    order_count_result = await session.execute(
+        select(func.count(Order.id)).where(Order.seller_id == seller_id)
+    )
+    if (order_count_result.scalar() or 0) > 0:
+        await safe_edit_text(
+            callback,
+            "Cannot delete vendor with existing transactions.",
+            reply_markup=_delete_help_keyboard(),
+        )
+        return
+
+    await session.delete(seller)
+    await session.commit()
+    await safe_edit_text(
+        callback,
+        f"Vendor {seller_id} deleted.",
+        reply_markup=_delete_help_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("admin_delete_user_"))
+async def delete_user_by_button(callback: CallbackQuery, session: AsyncSession):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    user_id = int(callback.data.replace("admin_delete_user_", ""))
+    user = await session.get(User, user_id)
+    if not user:
+        await safe_edit_text(callback, "User not found.", reply_markup=_delete_help_keyboard())
+        return
+
+    buyer_order_count_result = await session.execute(
+        select(func.count(Order.id)).where(Order.buyer_id == user_id)
+    )
+    if (buyer_order_count_result.scalar() or 0) > 0:
+        await safe_edit_text(
+            callback,
+            "Cannot delete user with buyer transactions.",
+            reply_markup=_delete_help_keyboard(),
+        )
+        return
+
+    seller_result = await session.execute(select(SellerProfile.id).where(SellerProfile.user_id == user_id))
+    seller_id = seller_result.scalar_one_or_none()
+    if seller_id is not None:
+        seller_order_count_result = await session.execute(
+            select(func.count(Order.id)).where(Order.seller_id == seller_id)
+        )
+        if (seller_order_count_result.scalar() or 0) > 0:
+            await safe_edit_text(
+                callback,
+                "Cannot delete user with seller transactions.",
+                reply_markup=_delete_help_keyboard(),
+            )
+            return
+
+    await session.delete(user)
+    await session.commit()
+    await safe_edit_text(
+        callback,
+        f"User {user_id} deleted.",
+        reply_markup=_delete_help_keyboard(),
+    )
+
+
 @router.callback_query(F.data.startswith("admin_delete_help_"))
-async def admin_delete_help(callback: CallbackQuery):
+async def admin_delete_help(callback: CallbackQuery, session: AsyncSession):
     if not _is_admin(callback.from_user.id):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
@@ -571,64 +780,226 @@ async def admin_delete_help(callback: CallbackQuery):
 
     target = callback.data.replace("admin_delete_help_", "")
     if target == "listing":
+        result = await session.execute(
+            select(Listing).order_by(Listing.created_at.desc()).limit(10)
+        )
+        listings = result.scalars().all()
+        buttons = [
+            (f"Delete listing #{listing.id}: {listing.title[:24]}", f"admin_delete_listing_{listing.id}")
+            for listing in listings
+        ]
         text = (
             "<b>Delete Listing</b>\n\n"
-            "Send command:\n"
-            "<code>/delete_listing_&lt;listing_id&gt;</code>\n\n"
-            "Example:\n"
-            "<code>/delete_listing_123</code>"
+            "Tap a listing below to delete it."
+            if listings
+            else "<b>Delete Listing</b>\n\nNo listings found."
         )
+        keyboard = _delete_picker_keyboard(buttons)
     elif target == "vendor":
+        result = await session.execute(
+            select(SellerProfile).options(joinedload(SellerProfile.user)).order_by(SellerProfile.created_at.desc()).limit(10)
+        )
+        sellers = result.scalars().all()
+        buttons = [
+            (
+                f"Delete vendor #{seller.id}: {(seller.user.first_name if seller.user else 'Unknown')[:20]}",
+                f"admin_delete_vendor_{seller.id}",
+            )
+            for seller in sellers
+        ]
         text = (
             "<b>Delete Vendor</b>\n\n"
-            "Send command:\n"
-            "<code>/delete_vendor_&lt;seller_id&gt;</code>\n\n"
-            "Example:\n"
-            "<code>/delete_vendor_45</code>"
+            "Tap a vendor below to delete."
+            if sellers
+            else "<b>Delete Vendor</b>\n\nNo vendors found."
         )
+        keyboard = _delete_picker_keyboard(buttons)
     else:
+        result = await session.execute(select(User).order_by(User.created_at.desc()).limit(10))
+        users = result.scalars().all()
+        buttons = [
+            (
+                f"Delete user #{user.id}: {user.first_name[:20]}",
+                f"admin_delete_user_{user.id}",
+            )
+            for user in users
+        ]
         text = (
             "<b>Delete User</b>\n\n"
-            "Send command:\n"
-            "<code>/delete_user_&lt;user_id&gt;</code>\n\n"
-            "Example:\n"
-            "<code>/delete_user_67</code>"
+            "Tap a user below to delete."
+            if users
+            else "<b>Delete User</b>\n\nNo users found."
         )
+        keyboard = _delete_picker_keyboard(buttons)
 
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_delete_help_keyboard())
+    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "admin_privileges_help")
-async def admin_privileges_help(callback: CallbackQuery):
+async def admin_privileges_help(callback: CallbackQuery, state: FSMContext):
     if not _is_admin(callback.from_user.id):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
+    await state.clear()
+    await state.set_state(AdminStates.awaiting_privilege_seller_id)
     text = (
         "<b>Vendor Privileges</b>\n\n"
-        "Use command:\n"
-        "<code>/set_vendor_privilege_&lt;seller_id&gt;_&lt;featured_0_or_1&gt;_&lt;priority_0_to_100&gt;</code>\n\n"
-        "Example:\n"
-        "<code>/set_vendor_privilege_45_1_90</code>"
+        "Step 1/3\n"
+        "Send the <b>Seller ID</b> you want to update."
     )
     await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_delete_help_keyboard())
+
+
+@router.message(AdminStates.awaiting_privilege_seller_id)
+async def receive_privilege_seller_id(message: Message, state: FSMContext, session: AsyncSession):
+    if not _is_admin(message.from_user.id):
+        await message.reply("You are not authorized to use this command.")
+        await state.clear()
+        return
+
+    seller_id_text = (message.text or "").strip()
+    if not seller_id_text.isdigit():
+        await message.reply("Please send a valid numeric Seller ID.")
+        return
+
+    seller_id = int(seller_id_text)
+    seller = await session.get(SellerProfile, seller_id)
+    if not seller:
+        await message.reply("Vendor not found. Send another Seller ID.")
+        return
+
+    await state.update_data(seller_id=seller_id)
+    await state.set_state(AdminStates.awaiting_privilege_featured)
+    await message.reply(
+        f"Step 2/3\nSeller #{seller_id} found.\nChoose featured status:",
+        reply_markup=_privilege_featured_keyboard(),
+    )
+
+
+@router.callback_query(
+    F.data.startswith("admin_priv_featured_"),
+    StateFilter(AdminStates.awaiting_privilege_featured),
+)
+async def receive_privilege_featured(callback: CallbackQuery, state: FSMContext):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        await state.clear()
+        return
+
+    await safe_answer_callback(callback)
+    is_featured = callback.data.endswith("_1")
+    await state.update_data(is_featured=is_featured)
+    await state.set_state(AdminStates.awaiting_privilege_priority)
+    await safe_edit_text(
+        callback,
+        "Step 3/3\nSend a priority score from 0 to 100.",
+        reply_markup=_delete_help_keyboard(),
+    )
+
+
+@router.message(AdminStates.awaiting_privilege_priority)
+async def receive_privilege_priority(message: Message, state: FSMContext, session: AsyncSession):
+    if not _is_admin(message.from_user.id):
+        await message.reply("You are not authorized to use this command.")
+        await state.clear()
+        return
+
+    priority_text = (message.text or "").strip()
+    if not priority_text.isdigit():
+        await message.reply("Priority must be a number between 0 and 100.")
+        return
+
+    priority_score = int(priority_text)
+    if priority_score < 0 or priority_score > 100:
+        await message.reply("Priority must be between 0 and 100.")
+        return
+
+    data = await state.get_data()
+    seller_id = data.get("seller_id")
+    is_featured = data.get("is_featured")
+    if seller_id is None or is_featured is None:
+        await state.clear()
+        await message.reply("Session expired. Open /admin_tools and try again.")
+        return
+
+    seller = await session.get(SellerProfile, int(seller_id))
+    if not seller:
+        await state.clear()
+        await message.reply("Vendor not found. Open /admin_tools and try again.")
+        return
+
+    seller.is_featured = bool(is_featured)
+    seller.priority_score = priority_score
+    await session.commit()
+    await state.clear()
+    await message.reply(
+        f"Vendor #{seller.id} updated.\nFeatured: {'Yes' if seller.is_featured else 'No'}\n"
+        f"Priority: {seller.priority_score}",
+        reply_markup=_admin_tools_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "admin_broadcast_help")
-async def admin_broadcast_help(callback: CallbackQuery):
+async def admin_broadcast_help(callback: CallbackQuery, state: FSMContext):
     if not _is_admin(callback.from_user.id):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
+    await state.clear()
     text = (
         "<b>Broadcast</b>\n\n"
-        "Send one of these commands:\n"
-        "<code>/broadcast_all Your message</code>\n"
-        "<code>/broadcast_buyers Your message</code>\n"
-        "<code>/broadcast_sellers Your message</code>\n"
-        "<code>/broadcast_verified_sellers Your message</code>"
+        "Choose an audience to continue."
     )
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_delete_help_keyboard())
+    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_broadcast_audience_keyboard())
+
+
+@router.callback_query(F.data.startswith("admin_broadcast_audience_"))
+async def choose_broadcast_audience(callback: CallbackQuery, state: FSMContext):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    audience = callback.data.replace("admin_broadcast_audience_", "")
+    await state.clear()
+    await state.update_data(broadcast_audience=audience)
+    await state.set_state(AdminStates.awaiting_broadcast_message)
+    await safe_edit_text(
+        callback,
+        f"Audience selected: <b>{audience}</b>\n\nNow type the message to broadcast.",
+        parse_mode="HTML",
+        reply_markup=_delete_help_keyboard(),
+    )
+
+
+@router.message(AdminStates.awaiting_broadcast_message)
+async def send_broadcast_from_state(message: Message, state: FSMContext, session: AsyncSession):
+    if not _is_admin(message.from_user.id):
+        await message.reply("You are not authorized to use this command.")
+        await state.clear()
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.reply("Broadcast message cannot be empty.")
+        return
+
+    data = await state.get_data()
+    audience = data.get("broadcast_audience")
+    if not audience:
+        await state.clear()
+        await message.reply("Session expired. Open /admin_tools and try again.")
+        return
+
+    recipient_ids = await _get_broadcast_recipient_ids(session, str(audience))
+    sent, failed = await _send_broadcast(message.bot, recipient_ids, text)
+    await state.clear()
+    await message.reply(
+        f"Broadcast complete.\nAudience: {audience}\nRecipients: {len(recipient_ids)}\n"
+        f"Sent: {sent}\nFailed: {failed}",
+        reply_markup=_admin_tools_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "admin_pending_refresh")
