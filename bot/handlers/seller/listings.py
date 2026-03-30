@@ -93,6 +93,7 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
         status = "Active" if listing.available else "Inactive"
         text += (
             f"<b>{listing.title}</b>\n"
+            f"Listing ID: {listing.listing_code}\n"
             f"Price: NGN {listing.buyer_price:,.2f}\n"
             f"Quantity: {listing.quantity}\n"
             f"Status: {status}\n"
@@ -346,7 +347,7 @@ async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, s
             (
                 "<b>Listing Created</b>\n\n"
                 "Your product is now live.\n"
-                f"Listing ID: {listing.id}\n"
+                f"Listing ID: {listing.listing_code}\n"
                 f"Quantity: {listing.quantity}"
             ),
             parse_mode="HTML",

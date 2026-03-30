@@ -93,6 +93,42 @@ def _delete_picker_keyboard(items: list[tuple[str, str]]) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+async def _find_seller_by_identifier(
+    session: AsyncSession,
+    identifier: str,
+    with_user: bool = False,
+) -> SellerProfile | None:
+    ident = (identifier or "").strip()
+    query = select(SellerProfile)
+    if with_user:
+        query = query.options(joinedload(SellerProfile.user))
+
+    if ident.isdigit():
+        seller = await session.get(SellerProfile, int(ident))
+        if seller:
+            if with_user:
+                result = await session.execute(
+                    select(SellerProfile)
+                    .options(joinedload(SellerProfile.user))
+                    .where(SellerProfile.id == seller.id)
+                )
+                return result.scalars().first()
+            return seller
+
+    result = await session.execute(query.where(SellerProfile.seller_code == ident.upper()))
+    return result.scalars().first()
+
+
+async def _find_listing_by_identifier(session: AsyncSession, identifier: str) -> Listing | None:
+    ident = (identifier or "").strip()
+    if ident.isdigit():
+        listing = await session.get(Listing, int(ident))
+        if listing:
+            return listing
+    result = await session.execute(select(Listing).where(Listing.listing_code == ident.upper()))
+    return result.scalars().first()
+
+
 def _broadcast_audience_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -137,7 +173,7 @@ async def _render_pending_text(session: AsyncSession) -> str:
         name = f"{user.first_name} {user.last_name or ''}".strip() if user else "Unknown"
         username = f"@{user.username}" if user and user.username else "N/A"
         text += (
-            f"<b>Seller ID:</b> {seller.id}\n"
+            f"<b>Seller ID:</b> {seller.seller_code}\n"
             f"<b>Name:</b> {name}\n"
             f"<b>Username:</b> {username}\n"
         )
@@ -148,7 +184,7 @@ async def _render_pending_text(session: AsyncSession) -> str:
             f"<b>Account Name:</b> {seller.account_name}\n"
             f"<b>ID Doc:</b> {seller.id_document_url or 'N/A'}\n"
             f"<b>Submitted:</b> {seller.created_at.strftime('%Y-%m-%d %H:%M')}\n"
-            f"/review_seller_{seller.id}\n\n"
+            f"/review_seller_{seller.seller_code}\n\n"
         )
     return text
 
@@ -219,7 +255,7 @@ async def _render_vendors_text(session: AsyncSession, limit: int = 10) -> str:
     text = "<b>Vendors (latest 10)</b>\n\n"
     for seller, user, listings_count, transactions_count in rows:
         text += (
-            f"<b>Seller ID:</b> {seller.id}\n"
+            f"<b>Seller ID:</b> {seller.seller_code}\n"
             f"<b>Name:</b> {user.first_name} {user.last_name or ''}\n"
             f"<b>Verified:</b> {'Yes' if seller.verified else 'No'}\n"
             f"<b>Featured:</b> {'Yes' if seller.is_featured else 'No'} "
@@ -275,12 +311,12 @@ async def _render_listings_text(session: AsyncSession, limit: int = 10) -> str:
     text = (
         "<b>Listings (latest 10)</b>\n\n"
         "Delete with:\n"
-        "<code>/delete_listing_&lt;listing_id&gt;</code>\n\n"
+        "<code>/delete_listing_&lt;listing_code_or_id&gt;</code>\n\n"
     )
     for listing in listings:
         seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
         text += (
-            f"<b>Listing ID:</b> {listing.id}\n"
+            f"<b>Listing ID:</b> {listing.listing_code}\n"
             f"<b>Title:</b> {listing.title}\n"
             f"<b>Category:</b> {listing.category.value}\n"
             f"<b>Quantity:</b> {listing.quantity}\n"
@@ -365,8 +401,8 @@ async def admin_tools(message: Message, state: FSMContext):
         "Stats, Vendors, Transactions, Listings, Pending Sellers, "
         "Privileges, Broadcast and Deletes are all here.\n\n"
         "Delete commands:\n"
-        "<code>/delete_listing_123</code>\n"
-        "<code>/delete_vendor_45</code>\n"
+        "<code>/delete_listing_LST-ABC12345</code>\n"
+        "<code>/delete_vendor_SEL-ABC12345</code>\n"
         "<code>/delete_user_67</code>"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
@@ -382,17 +418,14 @@ async def pending_sellers(message: Message, session: AsyncSession):
     await message.answer(text, parse_mode="HTML", reply_markup=_pending_keyboard())
 
 
-@router.message(F.text.regexp(r"^/review_seller_(\d+)$"))
+@router.message(F.text.regexp(r"^/review_seller_([A-Za-z0-9\-]+)$"))
 async def review_seller(message: Message, session: AsyncSession):
     if not _is_admin(message.from_user.id):
         await message.reply("You are not authorized to use this command.")
         return
 
-    seller_id = int(message.text.split("_")[-1])
-    result = await session.execute(
-        select(SellerProfile).options(joinedload(SellerProfile.user)).where(SellerProfile.id == seller_id)
-    )
-    seller = result.scalars().first()
+    seller_identifier = message.text.split("_")[-1]
+    seller = await _find_seller_by_identifier(session, seller_identifier, with_user=True)
     if not seller:
         await message.reply("Seller not found.")
         return
@@ -402,7 +435,7 @@ async def review_seller(message: Message, session: AsyncSession):
     username = f"@{user.username}" if user and user.username else "N/A"
     text = (
         "<b>Seller Verification Review</b>\n\n"
-        f"<b>Seller ID:</b> {seller.id}\n"
+        f"<b>Seller ID:</b> {seller.seller_code}\n"
         f"<b>Name:</b> {name}\n"
         f"<b>Username:</b> {username}\n"
         f"<b>Student:</b> {'Yes' if seller.is_student else 'No'}\n"
@@ -420,22 +453,20 @@ async def review_seller(message: Message, session: AsyncSession):
     await message.answer(text, parse_mode="HTML", reply_markup=_actions_keyboard(seller.id))
 
 
-@router.message(F.text.regexp(r"^/delete_listing_(\d+)$"))
+@router.message(F.text.regexp(r"^/delete_listing_([A-Za-z0-9\-]+)$"))
 async def delete_listing_by_command(message: Message, session: AsyncSession):
     if not _is_admin(message.from_user.id):
         await message.reply("You are not authorized to use this command.")
         return
 
-    listing_id = int(message.text.split("_")[-1])
-    from db.models import Listing
-
-    listing = await session.get(Listing, listing_id)
+    listing_identifier = message.text.split("_")[-1]
+    listing = await _find_listing_by_identifier(session, listing_identifier)
     if not listing:
         await message.reply("Listing not found.")
         return
 
     order_count_result = await session.execute(
-        select(func.count(Order.id)).where(Order.listing_id == listing_id)
+        select(func.count(Order.id)).where(Order.listing_id == listing.id)
     )
     order_count = order_count_result.scalar() or 0
     if order_count > 0:
@@ -444,23 +475,23 @@ async def delete_listing_by_command(message: Message, session: AsyncSession):
 
     await session.delete(listing)
     await session.commit()
-    await message.reply(f"Listing {listing_id} deleted.")
+    await message.reply(f"Listing {listing.listing_code} deleted.")
 
 
-@router.message(F.text.regexp(r"^/delete_vendor_(\d+)$"))
+@router.message(F.text.regexp(r"^/delete_vendor_([A-Za-z0-9\-]+)$"))
 async def delete_vendor_by_command(message: Message, session: AsyncSession):
     if not _is_admin(message.from_user.id):
         await message.reply("You are not authorized to use this command.")
         return
 
-    seller_id = int(message.text.split("_")[-1])
-    seller = await session.get(SellerProfile, seller_id)
+    seller_identifier = message.text.split("_")[-1]
+    seller = await _find_seller_by_identifier(session, seller_identifier)
     if not seller:
         await message.reply("Vendor not found.")
         return
 
     order_count_result = await session.execute(
-        select(func.count(Order.id)).where(Order.seller_id == seller_id)
+        select(func.count(Order.id)).where(Order.seller_id == seller.id)
     )
     order_count = order_count_result.scalar() or 0
     if order_count > 0:
@@ -469,7 +500,7 @@ async def delete_vendor_by_command(message: Message, session: AsyncSession):
 
     await session.delete(seller)
     await session.commit()
-    await message.reply(f"Vendor {seller_id} deleted.")
+    await message.reply(f"Vendor {seller.seller_code} deleted.")
 
 
 @router.message(F.text.regexp(r"^/delete_user_(\d+)$"))
@@ -508,19 +539,18 @@ async def delete_user_by_command(message: Message, session: AsyncSession):
     await message.reply(f"User {user_id} deleted.")
 
 
-@router.message(F.text.regexp(r"^/set_vendor_privilege_(\d+)_(0|1)_(\d{1,3})$"))
+@router.message(F.text.regexp(r"^/set_vendor_privilege_([A-Za-z0-9\-]+)_(0|1)_(\d{1,3})$"))
 async def set_vendor_privilege(message: Message, session: AsyncSession):
     if not _is_admin(message.from_user.id):
         await message.reply("You are not authorized to use this command.")
         return
 
-    match = re.match(r"^/set_vendor_privilege_(\d+)_(0|1)_(\d{1,3})$", message.text or "")
+    match = re.match(r"^/set_vendor_privilege_([A-Za-z0-9\-]+)_(0|1)_(\d{1,3})$", message.text or "")
     if not match:
         await message.reply("Invalid command format.")
         return
 
-    seller_id_text, featured_text, priority_text = match.groups()
-    seller_id = int(seller_id_text)
+    seller_identifier, featured_text, priority_text = match.groups()
     is_featured = featured_text == "1"
     priority_score = int(priority_text)
 
@@ -528,7 +558,7 @@ async def set_vendor_privilege(message: Message, session: AsyncSession):
         await message.reply("Priority must be between 0 and 100.")
         return
 
-    seller = await session.get(SellerProfile, seller_id)
+    seller = await _find_seller_by_identifier(session, seller_identifier)
     if not seller:
         await message.reply("Vendor not found.")
         return
@@ -537,7 +567,8 @@ async def set_vendor_privilege(message: Message, session: AsyncSession):
     seller.priority_score = priority_score
     await session.commit()
     await message.reply(
-        f"Vendor {seller_id} updated.\nFeatured: {'Yes' if is_featured else 'No'}\nPriority: {priority_score}"
+        f"Vendor {seller.seller_code} updated.\n"
+        f"Featured: {'Yes' if is_featured else 'No'}\nPriority: {priority_score}"
     )
 
 
@@ -623,8 +654,8 @@ async def open_admin_tools(callback: CallbackQuery, state: FSMContext):
         "- Vendor Privileges\n"
         "- Broadcast\n\n"
         "Delete commands:\n"
-        "<code>/delete_listing_123</code>\n"
-        "<code>/delete_vendor_45</code>\n"
+        "<code>/delete_listing_LST-ABC12345</code>\n"
+        "<code>/delete_vendor_SEL-ABC12345</code>\n"
         "<code>/delete_user_67</code>\n\n"
         "Use IDs from admin lists before deleting."
     )
@@ -699,7 +730,7 @@ async def delete_listing_by_button(callback: CallbackQuery, session: AsyncSessio
     await session.commit()
     await safe_edit_text(
         callback,
-        f"Listing {listing_id} deleted.",
+        f"Listing {listing.listing_code} deleted.",
         reply_markup=_delete_help_keyboard(),
     )
 
@@ -732,7 +763,7 @@ async def delete_vendor_by_button(callback: CallbackQuery, session: AsyncSession
     await session.commit()
     await safe_edit_text(
         callback,
-        f"Vendor {seller_id} deleted.",
+        f"Vendor {seller.seller_code} deleted.",
         reply_markup=_delete_help_keyboard(),
     )
 
@@ -798,7 +829,10 @@ async def admin_delete_help(callback: CallbackQuery, session: AsyncSession):
         )
         listings = result.scalars().all()
         buttons = [
-            (f"Delete listing #{listing.id}: {listing.title[:24]}", f"admin_delete_listing_{listing.id}")
+            (
+                f"Delete {listing.listing_code}: {listing.title[:24]}",
+                f"admin_delete_listing_{listing.id}",
+            )
             for listing in listings
         ]
         text = (
@@ -815,7 +849,7 @@ async def admin_delete_help(callback: CallbackQuery, session: AsyncSession):
         sellers = result.scalars().all()
         buttons = [
             (
-                f"Delete vendor #{seller.id}: {(seller.user.first_name if seller.user else 'Unknown')[:20]}",
+                f"Delete {seller.seller_code}: {(seller.user.first_name if seller.user else 'Unknown')[:20]}",
                 f"admin_delete_vendor_{seller.id}",
             )
             for seller in sellers
@@ -859,7 +893,7 @@ async def admin_privileges_help(callback: CallbackQuery, state: FSMContext):
     text = (
         "<b>Vendor Privileges</b>\n\n"
         "Step 1/3\n"
-        "Send the <b>Seller ID</b> you want to update."
+        "Send the <b>Seller ID</b> (e.g. SEL-ABC12345) you want to update."
     )
     await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_delete_help_keyboard())
 
@@ -871,21 +905,16 @@ async def receive_privilege_seller_id(message: Message, state: FSMContext, sessi
         await state.clear()
         return
 
-    seller_id_text = (message.text or "").strip()
-    if not seller_id_text.isdigit():
-        await message.reply("Please send a valid numeric Seller ID.")
-        return
-
-    seller_id = int(seller_id_text)
-    seller = await session.get(SellerProfile, seller_id)
+    seller_identifier = (message.text or "").strip()
+    seller = await _find_seller_by_identifier(session, seller_identifier)
     if not seller:
-        await message.reply("Vendor not found. Send another Seller ID.")
+        await message.reply("Vendor not found. Send seller code (SEL-...) or numeric ID.")
         return
 
-    await state.update_data(seller_id=seller_id)
+    await state.update_data(seller_id=seller.id)
     await state.set_state(AdminStates.awaiting_privilege_featured)
     await message.reply(
-        f"Step 2/3\nSeller #{seller_id} found.\nChoose featured status:",
+        f"Step 2/3\nSeller {seller.seller_code} found.\nChoose featured status:",
         reply_markup=_privilege_featured_keyboard(),
     )
 
@@ -947,7 +976,7 @@ async def receive_privilege_priority(message: Message, state: FSMContext, sessio
     await session.commit()
     await state.clear()
     await message.reply(
-        f"Vendor #{seller.id} updated.\nFeatured: {'Yes' if seller.is_featured else 'No'}\n"
+        f"Vendor {seller.seller_code} updated.\nFeatured: {'Yes' if seller.is_featured else 'No'}\n"
         f"Priority: {seller.priority_score}",
         reply_markup=_admin_tools_keyboard(),
     )
@@ -1091,7 +1120,7 @@ async def approve_seller(callback: CallbackQuery, session: AsyncSession):
 
     await safe_edit_text(
         callback,
-        f"Seller {seller.id} approved successfully.",
+        f"Seller {seller.seller_code} approved successfully.",
         reply_markup=_pending_keyboard(),
     )
 
@@ -1126,6 +1155,6 @@ async def reject_seller(callback: CallbackQuery, session: AsyncSession):
 
     await safe_edit_text(
         callback,
-        f"Seller {seller.id} marked as not approved.",
+        f"Seller {seller.seller_code} marked as not approved.",
         reply_markup=_pending_keyboard(),
     )

@@ -297,6 +297,7 @@ async def list_all_vendors(
         vendor_rows.append(
             {
                 "seller_id": seller.id,
+                "seller_code": seller.seller_code,
                 "user_id": seller.user_id,
                 "telegram_id": user.telegram_id,
                 "name": f"{user.first_name} {user.last_name or ''}".strip(),
@@ -349,6 +350,7 @@ async def update_vendor_privileges(
     return {
         "ok": True,
         "seller_id": seller.id,
+        "seller_code": seller.seller_code,
         "is_featured": seller.is_featured,
         "priority_score": seller.priority_score,
     }
@@ -381,7 +383,7 @@ async def delete_vendor(
 
     await session.delete(seller)
     await session.commit()
-    return {"ok": True, "deleted_vendor_id": seller_id}
+    return {"ok": True, "deleted_vendor_id": seller_id, "deleted_vendor_code": seller.seller_code}
 
 
 @app.delete("/admin/users/{user_id}")
@@ -568,6 +570,7 @@ async def list_all_transactions(
                 },
                 "seller": {
                     "seller_id": order.seller.id if order.seller else None,
+                    "seller_code": order.seller.seller_code if order.seller else None,
                     "user_id": order.seller.user.id if order.seller and order.seller.user else None,
                     "name": order.seller.user.first_name
                     if order.seller and order.seller.user
@@ -575,6 +578,7 @@ async def list_all_transactions(
                 },
                 "listing": {
                     "listing_id": order.listing.id if order.listing else None,
+                    "listing_code": order.listing.listing_code if order.listing else None,
                     "title": order.listing.title if order.listing else None,
                 },
                 "buyer_address": order.buyer_address,
@@ -617,6 +621,7 @@ async def list_all_listings(
         "listings": [
             {
                 "listing_id": listing.id,
+                "listing_code": listing.listing_code,
                 "title": listing.title,
                 "description": listing.description,
                 "category": listing.category.value,
@@ -630,6 +635,7 @@ async def list_all_listings(
                 "image_url": listing.image_url,
                 "seller": {
                     "seller_id": listing.seller.id if listing.seller else None,
+                    "seller_code": listing.seller.seller_code if listing.seller else None,
                     "verified": listing.seller.verified if listing.seller else None,
                     "is_featured": listing.seller.is_featured if listing.seller else None,
                     "priority_score": listing.seller.priority_score if listing.seller else None,
@@ -672,7 +678,11 @@ async def delete_listing(
 
     await session.delete(listing)
     await session.commit()
-    return {"ok": True, "deleted_listing_id": listing_id}
+    return {
+        "ok": True,
+        "deleted_listing_id": listing_id,
+        "deleted_listing_code": listing.listing_code,
+    }
 
 
 @app.get("/admin/sellers/pending")
@@ -698,6 +708,7 @@ async def list_pending_seller_verifications(
         "pending_sellers": [
             {
                 "seller_id": seller.id,
+                "seller_code": seller.seller_code,
                 "user_id": seller.user_id,
                 "telegram_id": seller.user.telegram_id if seller.user else None,
                 "name": f"{seller.user.first_name} {seller.user.last_name or ''}".strip()
@@ -755,7 +766,12 @@ async def approve_seller_verification(
         except Exception:
             logger.exception("Failed to notify seller %s after approval", seller.id)
 
-    return {"ok": True, "seller_id": seller.id, "verified": seller.verified}
+    return {
+        "ok": True,
+        "seller_id": seller.id,
+        "seller_code": seller.seller_code,
+        "verified": seller.verified,
+    }
 
 
 @app.post("/admin/sellers/{seller_id}/reject")
@@ -791,7 +807,13 @@ async def reject_seller_verification(
         except Exception:
             logger.exception("Failed to notify seller %s after rejection", seller.id)
 
-    return {"ok": True, "seller_id": seller.id, "verified": seller.verified, "reason": reason}
+    return {
+        "ok": True,
+        "seller_id": seller.id,
+        "seller_code": seller.seller_code,
+        "verified": seller.verified,
+        "reason": reason,
+    }
 
 
 if __name__ == "__main__":

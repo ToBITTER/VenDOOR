@@ -302,7 +302,7 @@ async def confirm_seller_registration(callback: CallbackQuery, state: FSMContext
                     chat_id=int(settings.admin_telegram_id),
                     text=(
                         "New seller registration pending review.\n"
-                        f"Seller ID: {seller.id}\n"
+                        f"Seller ID: {seller.seller_code}\n"
                         "Use /pending_sellers to review."
                     ),
                 )

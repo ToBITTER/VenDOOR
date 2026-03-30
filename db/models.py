@@ -13,6 +13,7 @@ from sqlalchemy import (
     UniqueConstraint, Index, func
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from core.id_codes import generate_listing_code, generate_seller_code
 
 
 class Base(DeclarativeBase):
@@ -106,6 +107,7 @@ class SellerProfile(Base):
     __tablename__ = "seller_profiles"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    seller_code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True, default=generate_seller_code)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False, index=True)
     is_student: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     student_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -153,6 +155,9 @@ class Listing(Base):
     __tablename__ = "listings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    listing_code: Mapped[str] = mapped_column(
+        String(20), unique=True, nullable=False, index=True, default=generate_listing_code
+    )
     seller_id: Mapped[int] = mapped_column(ForeignKey("seller_profiles.id"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(String(2000), nullable=False)
