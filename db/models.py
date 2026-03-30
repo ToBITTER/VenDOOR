@@ -107,6 +107,8 @@ class SellerProfile(Base):
     address: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     id_document_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)  # Telegram file_id
     verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_featured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    priority_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     bank_code: Mapped[str] = mapped_column(String(10), nullable=False)
     account_number: Mapped[str] = mapped_column(String(20), nullable=False)
     account_name: Mapped[str] = mapped_column(String(255), nullable=False)

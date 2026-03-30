@@ -111,6 +111,8 @@ async def review_seller(message: Message, session: AsyncSession):
         f"<b>Name:</b> {name}\n"
         f"<b>Username:</b> {username}\n"
         f"<b>Student:</b> {'Yes' if seller.is_student else 'No'}\n"
+        f"<b>Featured Vendor:</b> {'Yes' if seller.is_featured else 'No'}\n"
+        f"<b>Priority Score:</b> {seller.priority_score}\n"
         f"<b>Student Email:</b> {seller.student_email or 'N/A'}\n"
         f"<b>Hall:</b> {seller.hall or 'N/A'}\n"
         f"<b>Room Number:</b> {seller.room_number or 'N/A'}\n"

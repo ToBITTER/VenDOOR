@@ -40,10 +40,15 @@ async def _fetch_category_listings(session: AsyncSession, category: Category) ->
 
     result = await session.execute(
         select(Listing)
+        .join(SellerProfile, SellerProfile.id == Listing.seller_id)
         .options(joinedload(Listing.seller).joinedload(SellerProfile.user))
         .where(Listing.category == category)
         .where(Listing.available == True)
-        .order_by(Listing.created_at.desc())
+        .order_by(
+            SellerProfile.is_featured.desc(),
+            SellerProfile.priority_score.desc(),
+            Listing.created_at.desc(),
+        )
         .limit(200)
     )
     listings = result.scalars().all()
@@ -256,6 +261,7 @@ async def view_seller_profile(callback: CallbackQuery, session: AsyncSession):
         f"<b>Name:</b> {seller_name}\n"
         f"<b>Username:</b> {username}\n"
         f"<b>Verification:</b> {'Verified' if seller.verified else 'Pending'}\n"
+        f"<b>Featured Vendor:</b> {'Yes' if seller.is_featured else 'No'}\n"
         f"<b>Active Listings:</b> {active_listings}\n"
     )
     keyboard = InlineKeyboardMarkup(
