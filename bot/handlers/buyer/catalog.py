@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from bot.keyboards.main_menu import get_catalog_categories
@@ -113,3 +113,43 @@ async def initiate_buy(callback: CallbackQuery, state: FSMContext, session: Asyn
     from bot.handlers.buyer import checkout
 
     await checkout.start_checkout(callback, state, session)
+
+
+@router.callback_query(F.data.startswith("seller_profile_"))
+async def view_seller_profile(callback: CallbackQuery, session: AsyncSession):
+    seller_id = int(callback.data.replace("seller_profile_", ""))
+    await safe_answer_callback(callback)
+
+    result = await session.execute(
+        select(SellerProfile)
+        .options(selectinload(SellerProfile.user), selectinload(SellerProfile.listings))
+        .where(SellerProfile.id == seller_id)
+    )
+    seller = result.scalars().first()
+    if not seller:
+        await safe_edit_text(
+            callback,
+            "Seller profile not found.",
+            reply_markup=get_catalog_categories(),
+        )
+        return
+
+    user = seller.user
+    seller_name = user.first_name if user else "Unknown Seller"
+    username = f"@{user.username}" if user and user.username else "N/A"
+    active_listings = len([listing for listing in (seller.listings or []) if listing.available])
+
+    text = (
+        "<b>Seller Profile</b>\n\n"
+        f"<b>Name:</b> {seller_name}\n"
+        f"<b>Username:</b> {username}\n"
+        f"<b>Verification:</b> {'Verified' if seller.verified else 'Pending'}\n"
+        f"<b>Active Listings:</b> {active_listings}\n"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")],
+        ]
+    )
+    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
