@@ -547,6 +547,9 @@ async def list_all_listings(
                 "title": listing.title,
                 "description": listing.description,
                 "category": listing.category.value,
+                "accessory_subcategory": (
+                    listing.accessory_subcategory.value if listing.accessory_subcategory else None
+                ),
                 "base_price": str(listing.base_price),
                 "buyer_price": str(listing.buyer_price),
                 "available": listing.available,

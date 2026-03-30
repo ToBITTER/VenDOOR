@@ -33,6 +33,13 @@ class Category(str, PyEnum):
     OTHERS = "OTHERS"
 
 
+class AccessorySubcategory(str, PyEnum):
+    """Accessory subcategory enum."""
+    BAGS = "BAGS"
+    JEWELRY = "JEWELRY"
+    WATCHES = "WATCHES"
+
+
 class OrderStatus(str, PyEnum):
     """Order status enum."""
     PENDING = "PENDING"           # Awaiting payment
@@ -150,6 +157,9 @@ class Listing(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(String(2000), nullable=False)
     category: Mapped[Category] = mapped_column(Enum(Category), nullable=False, index=True)
+    accessory_subcategory: Mapped[Optional[AccessorySubcategory]] = mapped_column(
+        Enum(AccessorySubcategory), nullable=True, index=True
+    )
     base_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     buyer_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)  # base_price * 1.05 (5% fee)
     image_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)  # Telegram file_id

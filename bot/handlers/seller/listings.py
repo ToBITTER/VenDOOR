@@ -14,12 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from bot.keyboards.main_menu import get_main_menu_inline, get_seller_actions
-from db.models import Category, Listing, SellerProfile, User
+from db.models import AccessorySubcategory, Category, Listing, SellerProfile, User
 
 router = Router()
 
 
-def format_category_label(category: Category) -> str:
+def format_category_label(category: Category, accessory_subcategory: AccessorySubcategory | None = None) -> str:
+    if category == Category.JEWELRY:
+        base = "Accessories"
+        if accessory_subcategory:
+            return f"{base} / {accessory_subcategory.value.title()}"
+        return base
     if category == Category.ELECTRONICS:
         return "Laptop"
     if category == Category.SKINCARE:
@@ -32,6 +37,7 @@ class ListingStates(StatesGroup):
     awaiting_description = State()
     awaiting_image = State()
     awaiting_category = State()
+    awaiting_accessory_subcategory = State()
     awaiting_base_price = State()
     confirming_listing = State()
 
@@ -75,7 +81,7 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
             f"<b>{listing.title}</b>\n"
             f"Price: NGN {listing.buyer_price:,.2f}\n"
             f"Status: {status}\n"
-            f"Category: {format_category_label(listing.category)}\n\n"
+            f"Category: {format_category_label(listing.category, listing.accessory_subcategory)}\n\n"
         )
 
     keyboard = InlineKeyboardMarkup(
@@ -158,7 +164,7 @@ async def handle_listing_image(message: Message, state: FSMContext):
     categories = [
         ("iPads", "cat_IPADS"),
         ("iPods", "cat_IPODS"),
-        ("Jewelry", "cat_JEWELRY"),
+        ("Accessories", "cat_JEWELRY"),
         ("Clothes", "cat_CLOTHES"),
         ("Laptop", "cat_ELECTRONICS"),
         ("Skin Care", "cat_SKINCARE"),
@@ -188,7 +194,44 @@ async def handle_listing_category(callback: CallbackQuery, state: FSMContext):
         await safe_answer_callback(callback, text="Invalid category", show_alert=True)
         return
 
-    await state.update_data(category=category)
+    if category == Category.JEWELRY:
+        await state.update_data(category=category, accessory_subcategory=None)
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Bags", callback_data="acc_BAGS")],
+                [InlineKeyboardButton(text="Jewelry", callback_data="acc_JEWELRY")],
+                [InlineKeyboardButton(text="Watches", callback_data="acc_WATCHES")],
+            ]
+        )
+        await safe_edit_text(
+            callback,
+            "<b>Accessories Type</b>\n\nChoose a subcategory.",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        await state.set_state(ListingStates.awaiting_accessory_subcategory)
+        return
+
+    await state.update_data(category=category, accessory_subcategory=None)
+    await safe_edit_text(
+        callback,
+        "<b>Base Price (NGN)</b>\n\nEnter base price. Buyer pays 5% platform fee.",
+        parse_mode="HTML",
+    )
+    await state.set_state(ListingStates.awaiting_base_price)
+
+
+@router.callback_query(F.data.startswith("acc_"), StateFilter(ListingStates.awaiting_accessory_subcategory))
+async def handle_accessory_subcategory(callback: CallbackQuery, state: FSMContext):
+    await safe_answer_callback(callback)
+    accessory_str = callback.data.replace("acc_", "").upper()
+    try:
+        accessory_subcategory = AccessorySubcategory[accessory_str]
+    except KeyError:
+        await safe_answer_callback(callback, text="Invalid accessories type", show_alert=True)
+        return
+
+    await state.update_data(accessory_subcategory=accessory_subcategory)
     await safe_edit_text(
         callback,
         "<b>Base Price (NGN)</b>\n\nEnter base price. Buyer pays 5% platform fee.",
@@ -216,7 +259,7 @@ async def handle_listing_price(message: Message, state: FSMContext):
         f"Title: {data.get('title')}\n"
         f"Description: {data.get('description')}\n"
         f"Image: {'Attached' if data.get('image_url') else 'Not attached'}\n"
-        f"Category: {format_category_label(data.get('category'))}\n"
+        f"Category: {format_category_label(data.get('category'), data.get('accessory_subcategory'))}\n"
         f"Base Price: NGN {data.get('base_price'):,.2f}\n"
         f"Buyer Price: NGN {data.get('buyer_price'):,.2f}\n\n"
         "Create this listing?"
@@ -244,6 +287,7 @@ async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, s
             description=data.get("description"),
             image_url=data.get("image_url"),
             category=data.get("category"),
+            accessory_subcategory=data.get("accessory_subcategory"),
             base_price=data.get("base_price"),
             buyer_price=data.get("buyer_price"),
             available=True,

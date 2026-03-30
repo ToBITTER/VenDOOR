@@ -29,7 +29,7 @@ def get_catalog_categories() -> InlineKeyboardMarkup:
     categories = [
         ("iPads", "browse_cat_IPADS"),
         ("iPods", "browse_cat_IPODS"),
-        ("Jewelry", "browse_cat_JEWELRY"),
+        ("Accessories", "browse_cat_JEWELRY"),
         ("Clothes", "browse_cat_CLOTHES"),
         ("Laptop", "browse_cat_ELECTRONICS"),
         ("Skin Care", "browse_cat_SKINCARE"),

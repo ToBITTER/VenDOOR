@@ -14,7 +14,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from bot.keyboards.main_menu import get_catalog_categories
-from db.models import Category, Listing, SellerProfile
+from db.models import AccessorySubcategory, Category, Listing, SellerProfile
 
 router = Router()
 
@@ -23,7 +23,11 @@ CACHE_TTL_SECONDS = 20
 _CATEGORY_CACHE: dict[str, tuple[float, list[Listing]]] = {}
 
 
-def format_category_label(category: Category) -> str:
+def format_category_label(category: Category, accessory_subcategory: AccessorySubcategory | None = None) -> str:
+    if category == Category.JEWELRY:
+        if accessory_subcategory:
+            return f"Accessories / {accessory_subcategory.value.title()}"
+        return "Accessories"
     if category == Category.ELECTRONICS:
         return "Laptop"
     if category == Category.SKINCARE:
@@ -31,14 +35,19 @@ def format_category_label(category: Category) -> str:
     return category.value.title()
 
 
-async def _fetch_category_listings(session: AsyncSession, category: Category) -> list[Listing]:
-    cache_key = category.name
+async def _fetch_category_listings(
+    session: AsyncSession,
+    category: Category,
+    accessory_subcategory: AccessorySubcategory | None = None,
+) -> list[Listing]:
+    subcat_token = accessory_subcategory.name if accessory_subcategory else "ALL"
+    cache_key = f"{category.name}:{subcat_token}"
     now = time.time()
     cached = _CATEGORY_CACHE.get(cache_key)
     if cached and now - cached[0] <= CACHE_TTL_SECONDS:
         return cached[1]
 
-    result = await session.execute(
+    query = (
         select(Listing)
         .join(SellerProfile, SellerProfile.id == Listing.seller_id)
         .options(joinedload(Listing.seller).joinedload(SellerProfile.user))
@@ -51,12 +60,21 @@ async def _fetch_category_listings(session: AsyncSession, category: Category) ->
         )
         .limit(200)
     )
+    if accessory_subcategory:
+        query = query.where(Listing.accessory_subcategory == accessory_subcategory)
+
+    result = await session.execute(query)
     listings = result.scalars().all()
     _CATEGORY_CACHE[cache_key] = (now, listings)
     return listings
 
 
-def _build_category_page_keyboard(category: Category, total_items: int, page: int) -> InlineKeyboardMarkup:
+def _build_category_page_keyboard(
+    category: Category,
+    total_items: int,
+    page: int,
+    subcat_token: str = "ALL",
+) -> InlineKeyboardMarkup:
     total_pages = (total_items - 1) // PAGE_SIZE + 1 if total_items else 1
 
     rows: list[list[InlineKeyboardButton]] = []
@@ -65,14 +83,14 @@ def _build_category_page_keyboard(category: Category, total_items: int, page: in
         nav_row.append(
             InlineKeyboardButton(
                 text="Prev 10",
-                callback_data=f"browse_page_{category.name}_{page - 1}",
+                callback_data=f"browse_page_{category.name}_{subcat_token}_{page - 1}",
             )
         )
     if page + 1 < total_pages:
         nav_row.append(
             InlineKeyboardButton(
                 text="Next 10",
-                callback_data=f"browse_page_{category.name}_{page + 1}",
+                callback_data=f"browse_page_{category.name}_{subcat_token}_{page + 1}",
             )
         )
     if nav_row:
@@ -129,11 +147,12 @@ async def _show_category_page(
     category: Category,
     listings: list[Listing],
     page: int,
+    accessory_subcategory: AccessorySubcategory | None = None,
 ) -> None:
     if not listings:
         await safe_edit_text(
             callback,
-            f"No products available in {format_category_label(category)}.\n\nTry another category.",
+            f"No products available in {format_category_label(category, accessory_subcategory)}.\n\nTry another category.",
             reply_markup=get_catalog_categories(),
         )
         return
@@ -145,11 +164,22 @@ async def _show_category_page(
     page_items = listings[start:end]
 
     control_text = (
-        f"<b>{format_category_label(category)} Listings</b>\n"
+        f"<b>{format_category_label(category, accessory_subcategory)} Listings</b>\n"
         f"Page {page + 1}/{total_pages} ({len(listings)} total)\n\n"
         "Each listing is shown below with its own image."
     )
-    control_keyboard = _build_category_page_keyboard(category, len(listings), page)
+    subcat_token = accessory_subcategory.name if accessory_subcategory else "ALL"
+    control_keyboard = _build_category_page_keyboard(category, len(listings), page, subcat_token=subcat_token)
+    if category == Category.JEWELRY:
+        control_keyboard.inline_keyboard.insert(
+            0,
+            [
+                InlineKeyboardButton(text="Bags", callback_data="browse_acc_BAGS_0"),
+                InlineKeyboardButton(text="Jewelry", callback_data="browse_acc_JEWELRY_0"),
+                InlineKeyboardButton(text="Watches", callback_data="browse_acc_WATCHES_0"),
+                InlineKeyboardButton(text="All", callback_data="browse_acc_ALL_0"),
+            ],
+        )
     # If callback came from a photo message, editing text will mutate caption on that image.
     # Create a fresh text control message instead, so stale images are not reused as headers.
     if callback.message and callback.message.photo:
@@ -170,7 +200,7 @@ async def _show_category_page(
         card_text = (
             f"<b>{idx}. {listing.title}</b>\n\n"
             f"{listing.description}\n\n"
-            f"Category: {format_category_label(category)}\n"
+            f"Category: {format_category_label(category, listing.accessory_subcategory)}\n"
             f"Price: NGN {listing.buyer_price:,.2f}\n"
             f"Seller: {seller_name}"
         )
@@ -194,16 +224,35 @@ async def browse_category(callback: CallbackQuery, session: AsyncSession):
         return
 
     await safe_answer_callback(callback)
+    if category == Category.JEWELRY:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Bags", callback_data="browse_acc_BAGS_0")],
+                [InlineKeyboardButton(text="Jewelry", callback_data="browse_acc_JEWELRY_0")],
+                [InlineKeyboardButton(text="Watches", callback_data="browse_acc_WATCHES_0")],
+                [InlineKeyboardButton(text="All Accessories", callback_data="browse_acc_ALL_0")],
+                [InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")],
+            ]
+        )
+        await safe_edit_text(
+            callback,
+            "<b>Accessories</b>\n\nChoose a subcategory:",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        return
+
     listings = await _fetch_category_listings(session, category)
-    await _show_category_page(callback, category, listings, page=0)
+    await _show_category_page(callback, category, listings, page=0, accessory_subcategory=None)
 
 
 @router.callback_query(F.data.startswith("browse_page_"))
 async def browse_category_page(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
     try:
-        _, _, category_name, page_str = callback.data.split("_", maxsplit=3)
+        _, _, category_name, subcat_token, page_str = callback.data.split("_", maxsplit=4)
         category = Category[category_name]
+        accessory_subcategory = None if subcat_token == "ALL" else AccessorySubcategory[subcat_token]
         page = int(page_str)
     except Exception:
         await safe_edit_text(
@@ -213,8 +262,33 @@ async def browse_category_page(callback: CallbackQuery, session: AsyncSession):
         )
         return
 
-    listings = await _fetch_category_listings(session, category)
-    await _show_category_page(callback, category, listings, page=page)
+    listings = await _fetch_category_listings(session, category, accessory_subcategory)
+    await _show_category_page(callback, category, listings, page=page, accessory_subcategory=accessory_subcategory)
+
+
+@router.callback_query(F.data.startswith("browse_acc_"))
+async def browse_accessories_subcategory(callback: CallbackQuery, session: AsyncSession):
+    await safe_answer_callback(callback)
+    try:
+        _, _, subcat_token, page_str = callback.data.split("_", maxsplit=3)
+        page = int(page_str)
+        accessory_subcategory = None if subcat_token == "ALL" else AccessorySubcategory[subcat_token]
+    except Exception:
+        await safe_edit_text(
+            callback,
+            "Unable to load accessories. Please try again.",
+            reply_markup=get_catalog_categories(),
+        )
+        return
+
+    listings = await _fetch_category_listings(session, Category.JEWELRY, accessory_subcategory)
+    await _show_category_page(
+        callback,
+        Category.JEWELRY,
+        listings,
+        page=page,
+        accessory_subcategory=accessory_subcategory,
+    )
 
 
 @router.callback_query(F.data.startswith("buy_listing_"))
