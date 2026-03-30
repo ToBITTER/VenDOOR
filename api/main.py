@@ -6,11 +6,14 @@ Handles webhooks, API endpoints for payment callbacks, and administrative operat
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from typing import Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
+from aiogram.exceptions import TelegramRetryAfter
 from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload
 
@@ -23,6 +26,18 @@ from bot.main import set_default_commands
 settings = get_settings()
 logger = logging.getLogger(__name__)
 UPDATE_SEMAPHORE = asyncio.Semaphore(20)
+BROADCAST_SEMAPHORE = asyncio.Semaphore(20)
+
+
+class BroadcastRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4096)
+    audience: Literal["all", "buyers", "sellers", "verified_sellers"] = "all"
+    dry_run: bool = False
+
+
+class VendorPrivilegeRequest(BaseModel):
+    is_featured: bool | None = None
+    priority_score: int | None = Field(default=None, ge=0, le=100)
 
 
 def require_admin(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
@@ -245,42 +260,50 @@ async def list_all_vendors(
     """
     List all seller profiles (vendors) with verification and account metadata.
     """
-    from db.models import Listing, Order, SellerProfile
+    from db.models import Listing, Order, SellerProfile, User
 
     total_result = await session.execute(select(func.count(SellerProfile.id)))
     total = total_result.scalar() or 0
 
+    listings_count_sq = (
+        select(Listing.seller_id.label("seller_id"), func.count(Listing.id).label("listings_count"))
+        .group_by(Listing.seller_id)
+        .subquery()
+    )
+    tx_count_sq = (
+        select(Order.seller_id.label("seller_id"), func.count(Order.id).label("transactions_count"))
+        .group_by(Order.seller_id)
+        .subquery()
+    )
+
     result = await session.execute(
-        select(SellerProfile)
-        .options(joinedload(SellerProfile.user))
+        select(
+            SellerProfile,
+            User,
+            func.coalesce(listings_count_sq.c.listings_count, 0).label("listings_count"),
+            func.coalesce(tx_count_sq.c.transactions_count, 0).label("transactions_count"),
+        )
+        .join(User, SellerProfile.user_id == User.id)
+        .outerjoin(listings_count_sq, listings_count_sq.c.seller_id == SellerProfile.id)
+        .outerjoin(tx_count_sq, tx_count_sq.c.seller_id == SellerProfile.id)
         .order_by(SellerProfile.created_at.desc())
         .offset(offset)
         .limit(limit)
     )
-    sellers = result.scalars().all()
+    rows = result.all()
 
     vendor_rows = []
-    for seller in sellers:
-        listing_count_result = await session.execute(
-            select(func.count(Listing.id)).where(Listing.seller_id == seller.id)
-        )
-        listings_count = listing_count_result.scalar() or 0
-
-        order_count_result = await session.execute(
-            select(func.count(Order.id)).where(Order.seller_id == seller.id)
-        )
-        transactions_count = order_count_result.scalar() or 0
-
+    for seller, user, listings_count, transactions_count in rows:
         vendor_rows.append(
             {
                 "seller_id": seller.id,
                 "user_id": seller.user_id,
-                "telegram_id": seller.user.telegram_id if seller.user else None,
-                "name": f"{seller.user.first_name} {seller.user.last_name or ''}".strip()
-                if seller.user
-                else None,
-                "username": seller.user.username if seller.user else None,
+                "telegram_id": user.telegram_id,
+                "name": f"{user.first_name} {user.last_name or ''}".strip(),
+                "username": user.username,
                 "verified": seller.verified,
+                "is_featured": seller.is_featured,
+                "priority_score": seller.priority_score,
                 "is_student": seller.is_student,
                 "student_email": seller.student_email,
                 "hall": seller.hall,
@@ -296,6 +319,135 @@ async def list_all_vendors(
         )
 
     return {"total": total, "limit": limit, "offset": offset, "vendors": vendor_rows}
+
+
+@app.post("/admin/vendors/{seller_id}/privileges")
+async def update_vendor_privileges(
+    seller_id: int,
+    payload: VendorPrivilegeRequest,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Update vendor privilege settings (featured and ranking priority).
+    """
+    from db.models import SellerProfile
+
+    seller = await session.get(SellerProfile, seller_id)
+    if not seller:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    if payload.is_featured is None and payload.priority_score is None:
+        raise HTTPException(status_code=400, detail="No privilege fields supplied")
+
+    if payload.is_featured is not None:
+        seller.is_featured = payload.is_featured
+    if payload.priority_score is not None:
+        seller.priority_score = payload.priority_score
+
+    await session.commit()
+    return {
+        "ok": True,
+        "seller_id": seller.id,
+        "is_featured": seller.is_featured,
+        "priority_score": seller.priority_score,
+    }
+
+
+async def _send_message_with_retry(bot: Bot, chat_id: int, text: str) -> tuple[bool, str | None]:
+    async with BROADCAST_SEMAPHORE:
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+            return True, None
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(exc.retry_after)
+            try:
+                await bot.send_message(chat_id=chat_id, text=text)
+                return True, None
+            except Exception as retry_exc:
+                return False, str(retry_exc)
+        except Exception as exc:
+            return False, str(exc)
+
+
+@app.post("/admin/broadcast")
+async def broadcast_message(
+    payload: BroadcastRequest,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Broadcast a message to users.
+    Supports audience targeting and dry-run mode.
+    """
+    from db.models import Order, SellerProfile, User
+
+    if payload.audience == "all":
+        recipients_query = select(User.telegram_id).where(User.telegram_id.is_not(None)).distinct()
+    elif payload.audience == "buyers":
+        recipients_query = (
+            select(User.telegram_id)
+            .join(Order, Order.buyer_id == User.id)
+            .where(User.telegram_id.is_not(None))
+            .distinct()
+        )
+    elif payload.audience == "sellers":
+        recipients_query = (
+            select(User.telegram_id)
+            .join(SellerProfile, SellerProfile.user_id == User.id)
+            .where(User.telegram_id.is_not(None))
+            .distinct()
+        )
+    else:  # verified_sellers
+        recipients_query = (
+            select(User.telegram_id)
+            .join(SellerProfile, SellerProfile.user_id == User.id)
+            .where(SellerProfile.verified.is_(True))
+            .where(User.telegram_id.is_not(None))
+            .distinct()
+        )
+
+    recipient_result = await session.execute(recipients_query)
+    recipient_ids = [row[0] for row in recipient_result.all() if row[0]]
+    total_recipients = len(recipient_ids)
+
+    if payload.dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "audience": payload.audience,
+            "recipient_count": total_recipients,
+        }
+
+    bot: Bot = app.state.bot
+    sent = 0
+    failed = 0
+    failures: list[dict[str, str]] = []
+
+    for telegram_id in recipient_ids:
+        try:
+            chat_id = int(telegram_id)
+        except Exception:
+            failed += 1
+            failures.append({"telegram_id": str(telegram_id), "error": "invalid_telegram_id"})
+            continue
+
+        ok, error = await _send_message_with_retry(bot, chat_id, payload.message)
+        if ok:
+            sent += 1
+        else:
+            failed += 1
+            failures.append({"telegram_id": str(telegram_id), "error": error or "send_failed"})
+
+    return {
+        "ok": True,
+        "dry_run": False,
+        "audience": payload.audience,
+        "recipient_count": total_recipients,
+        "sent": sent,
+        "failed": failed,
+        "failures": failures[:100],
+    }
 
 
 @app.get("/admin/transactions")
@@ -402,6 +554,8 @@ async def list_all_listings(
                 "seller": {
                     "seller_id": listing.seller.id if listing.seller else None,
                     "verified": listing.seller.verified if listing.seller else None,
+                    "is_featured": listing.seller.is_featured if listing.seller else None,
+                    "priority_score": listing.seller.priority_score if listing.seller else None,
                     "name": listing.seller.user.first_name
                     if listing.seller and listing.seller.user
                     else None,
@@ -474,6 +628,8 @@ async def list_pending_seller_verifications(
                 else None,
                 "username": seller.user.username if seller.user else None,
                 "is_student": seller.is_student,
+                "is_featured": seller.is_featured,
+                "priority_score": seller.priority_score,
                 "student_email": seller.student_email,
                 "hall": seller.hall,
                 "room_number": seller.room_number,
