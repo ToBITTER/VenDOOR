@@ -6,7 +6,7 @@ Handles webhooks, API endpoints for payment callbacks, and administrative operat
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import Bot, Dispatcher
@@ -196,7 +196,10 @@ async def get_order_status(order_id: int, session: AsyncSession = Depends(get_se
 # ============================================================================
 
 @app.get("/admin/stats")
-async def admin_stats(session: AsyncSession = Depends(get_session)):
+async def admin_stats(
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
     """
     Get marketplace statistics (orders, sellers, etc).
     Should be protected with authentication in production.
@@ -230,6 +233,215 @@ async def admin_stats(session: AsyncSession = Depends(get_session)):
         "verified_sellers": stats.verified_sellers or 0,
         "active_listings": stats.active_listings or 0,
     }
+
+
+@app.get("/admin/vendors")
+async def list_all_vendors(
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """
+    List all seller profiles (vendors) with verification and account metadata.
+    """
+    from db.models import Listing, Order, SellerProfile
+
+    total_result = await session.execute(select(func.count(SellerProfile.id)))
+    total = total_result.scalar() or 0
+
+    result = await session.execute(
+        select(SellerProfile)
+        .options(joinedload(SellerProfile.user))
+        .order_by(SellerProfile.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    sellers = result.scalars().all()
+
+    vendor_rows = []
+    for seller in sellers:
+        listing_count_result = await session.execute(
+            select(func.count(Listing.id)).where(Listing.seller_id == seller.id)
+        )
+        listings_count = listing_count_result.scalar() or 0
+
+        order_count_result = await session.execute(
+            select(func.count(Order.id)).where(Order.seller_id == seller.id)
+        )
+        transactions_count = order_count_result.scalar() or 0
+
+        vendor_rows.append(
+            {
+                "seller_id": seller.id,
+                "user_id": seller.user_id,
+                "telegram_id": seller.user.telegram_id if seller.user else None,
+                "name": f"{seller.user.first_name} {seller.user.last_name or ''}".strip()
+                if seller.user
+                else None,
+                "username": seller.user.username if seller.user else None,
+                "verified": seller.verified,
+                "is_student": seller.is_student,
+                "student_email": seller.student_email,
+                "hall": seller.hall,
+                "room_number": seller.room_number,
+                "address": seller.address,
+                "bank_code": seller.bank_code,
+                "account_number": seller.account_number,
+                "account_name": seller.account_name,
+                "listings_count": listings_count,
+                "transactions_count": transactions_count,
+                "created_at": seller.created_at.isoformat(),
+            }
+        )
+
+    return {"total": total, "limit": limit, "offset": offset, "vendors": vendor_rows}
+
+
+@app.get("/admin/transactions")
+async def list_all_transactions(
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """
+    List all orders/transactions with current status.
+    """
+    from db.models import Order, SellerProfile
+
+    total_result = await session.execute(select(func.count(Order.id)))
+    total = total_result.scalar() or 0
+
+    result = await session.execute(
+        select(Order)
+        .options(
+            joinedload(Order.buyer),
+            joinedload(Order.seller).joinedload(SellerProfile.user),
+            joinedload(Order.listing),
+        )
+        .order_by(Order.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    orders = result.scalars().all()
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "transactions": [
+            {
+                "order_id": order.id,
+                "status": order.status.value,
+                "amount": str(order.amount),
+                "transaction_ref": order.transaction_ref,
+                "buyer": {
+                    "user_id": order.buyer.id if order.buyer else None,
+                    "telegram_id": order.buyer.telegram_id if order.buyer else None,
+                    "name": order.buyer.first_name if order.buyer else None,
+                },
+                "seller": {
+                    "seller_id": order.seller.id if order.seller else None,
+                    "user_id": order.seller.user.id if order.seller and order.seller.user else None,
+                    "name": order.seller.user.first_name
+                    if order.seller and order.seller.user
+                    else None,
+                },
+                "listing": {
+                    "listing_id": order.listing.id if order.listing else None,
+                    "title": order.listing.title if order.listing else None,
+                },
+                "buyer_address": order.buyer_address,
+                "created_at": order.created_at.isoformat(),
+                "updated_at": order.updated_at.isoformat(),
+            }
+            for order in orders
+        ],
+    }
+
+
+@app.get("/admin/listings")
+async def list_all_listings(
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """
+    List all product listings with availability status.
+    """
+    from db.models import Listing, SellerProfile
+
+    total_result = await session.execute(select(func.count(Listing.id)))
+    total = total_result.scalar() or 0
+
+    result = await session.execute(
+        select(Listing)
+        .options(joinedload(Listing.seller).joinedload(SellerProfile.user))
+        .order_by(Listing.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    listings = result.scalars().all()
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "listings": [
+            {
+                "listing_id": listing.id,
+                "title": listing.title,
+                "description": listing.description,
+                "category": listing.category.value,
+                "base_price": str(listing.base_price),
+                "buyer_price": str(listing.buyer_price),
+                "available": listing.available,
+                "image_url": listing.image_url,
+                "seller": {
+                    "seller_id": listing.seller.id if listing.seller else None,
+                    "verified": listing.seller.verified if listing.seller else None,
+                    "name": listing.seller.user.first_name
+                    if listing.seller and listing.seller.user
+                    else None,
+                },
+                "created_at": listing.created_at.isoformat(),
+            }
+            for listing in listings
+        ],
+    }
+
+
+@app.delete("/admin/listings/{listing_id}")
+async def delete_listing(
+    listing_id: int,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Delete a listing from admin panel.
+    For safety, listing cannot be deleted if linked to transactions.
+    """
+    from db.models import Listing, Order
+
+    listing = await session.get(Listing, listing_id)
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+
+    order_count_result = await session.execute(
+        select(func.count(Order.id)).where(Order.listing_id == listing_id)
+    )
+    order_count = order_count_result.scalar() or 0
+    if order_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete listing with existing transactions",
+        )
+
+    await session.delete(listing)
+    await session.commit()
+    return {"ok": True, "deleted_listing_id": listing_id}
 
 
 @app.get("/admin/sellers/pending")
