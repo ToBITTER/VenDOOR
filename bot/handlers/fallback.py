@@ -14,8 +14,8 @@ router = Router()
 @router.message()
 async def fallback_message_handler(message: Message):
     text = (
-        "I did not understand that message.\n\n"
-        "Use the menu below or send /start to open the main menu."
+        "Hey, I did not catch that.\n\n"
+        "Use the menu below or send /start to open VenDOOR main menu."
     )
     await message.answer(text, reply_markup=get_main_menu_inline())
 
@@ -25,6 +25,6 @@ async def fallback_callback_handler(callback: CallbackQuery):
     await safe_answer_callback(callback)
     await safe_edit_text(
         callback,
-        "That button is no longer active. Please use the menu below.",
+        "That button is no longer active.\n\nPlease use the VenDOOR menu below.",
         reply_markup=get_main_menu_inline(),
     )
