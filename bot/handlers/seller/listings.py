@@ -22,6 +22,7 @@ router = Router()
 class ListingStates(StatesGroup):
     awaiting_title = State()
     awaiting_description = State()
+    awaiting_image = State()
     awaiting_category = State()
     awaiting_base_price = State()
     confirming_listing = State()
@@ -134,6 +135,17 @@ async def handle_listing_description(message: Message, state: FSMContext):
         await message.reply("Description must be 10-500 characters.")
         return
     await state.update_data(description=description)
+    await message.answer(
+        "<b>Product Image</b>\n\nSend a clear photo of the item you want to list.",
+        parse_mode="HTML",
+    )
+    await state.set_state(ListingStates.awaiting_image)
+
+
+@router.message(ListingStates.awaiting_image, F.photo)
+async def handle_listing_image(message: Message, state: FSMContext):
+    image_file_id = message.photo[-1].file_id
+    await state.update_data(image_url=image_file_id)
 
     categories = [
         ("iPads", "cat_IPADS"),
@@ -150,6 +162,11 @@ async def handle_listing_description(message: Message, state: FSMContext):
     )
     await message.answer("<b>Select Category</b>", parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(ListingStates.awaiting_category)
+
+
+@router.message(ListingStates.awaiting_image)
+async def handle_listing_image_invalid(message: Message):
+    await message.reply("Please send a product photo to continue.")
 
 
 @router.callback_query(F.data.startswith("cat_"), StateFilter(ListingStates.awaiting_category))
@@ -189,6 +206,7 @@ async def handle_listing_price(message: Message, state: FSMContext):
         "<b>Listing Summary</b>\n\n"
         f"Title: {data.get('title')}\n"
         f"Description: {data.get('description')}\n"
+        f"Image: {'Attached' if data.get('image_url') else 'Not attached'}\n"
         f"Category: {data.get('category').value}\n"
         f"Base Price: NGN {data.get('base_price'):,.2f}\n"
         f"Buyer Price: NGN {data.get('buyer_price'):,.2f}\n\n"
@@ -215,6 +233,7 @@ async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, s
             seller_id=data.get("seller_id"),
             title=data.get("title"),
             description=data.get("description"),
+            image_url=data.get("image_url"),
             category=data.get("category"),
             base_price=data.get("base_price"),
             buyer_price=data.get("buyer_price"),
