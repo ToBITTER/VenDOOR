@@ -151,7 +151,7 @@ async def korapay_webhook_handler(request: dict, session: AsyncSession = Depends
         }
     }
     """
-    return await korapay_webhook.handle_korapay_webhook(request, session)
+    return await korapay_webhook.handle_korapay_webhook(request, session, app.state.bot)
 
 
 @app.get("/webhooks/telegram")

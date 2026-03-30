@@ -365,13 +365,12 @@ async def view_seller_profile(callback: CallbackQuery, session: AsyncSession):
 
     user = seller.user
     seller_name = user.first_name if user else "Unknown Seller"
-    username = f"@{user.username}" if user and user.username else "N/A"
     active_listings = len([listing for listing in (seller.listings or []) if listing.available])
 
     text = (
         "<b>Seller Profile</b>\n\n"
         f"<b>Name:</b> {seller_name}\n"
-        f"<b>Username:</b> {username}\n"
+        "<b>Username:</b> Hidden until payment is confirmed\n"
         f"<b>Verification:</b> {'Verified' if seller.verified else 'Pending'}\n"
         f"<b>Featured Vendor:</b> {'Yes' if seller.is_featured else 'No'}\n"
         f"<b>Active Listings:</b> {active_listings}\n"

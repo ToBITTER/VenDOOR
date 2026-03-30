@@ -4,17 +4,23 @@ Processes payment confirmations and updates order statuses in the database.
 """
 
 from datetime import datetime, timedelta
+from aiogram import Bot
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
-from db.models import Listing, Order, OrderStatus
+from db.models import Listing, Order, OrderStatus, SellerProfile
 from services.korapay import get_korapay_client
 from core.config import get_settings
 
 settings = get_settings()
 
 
-async def handle_korapay_webhook(webhook_data: dict, session: AsyncSession) -> dict:
+async def handle_korapay_webhook(
+    webhook_data: dict,
+    session: AsyncSession,
+    bot: Bot | None = None,
+) -> dict:
     """
     Handle incoming Korapay webhook for payment status changes.
     
@@ -47,7 +53,7 @@ async def handle_korapay_webhook(webhook_data: dict, session: AsyncSession) -> d
         
         if event == "charge.completed" and status == "success":
             # Payment successful - update order to PAID and schedule escrow release
-            return await _handle_payment_success(reference, data, session)
+            return await _handle_payment_success(reference, data, session, bot)
         
         elif event == "charge.failed" or status == "failed":
             # Payment failed - cancel order
@@ -62,7 +68,12 @@ async def handle_korapay_webhook(webhook_data: dict, session: AsyncSession) -> d
         return {"status": "error", "error": str(e)}
 
 
-async def _handle_payment_success(reference: str, data: dict, session: AsyncSession) -> dict:
+async def _handle_payment_success(
+    reference: str,
+    data: dict,
+    session: AsyncSession,
+    bot: Bot | None = None,
+) -> dict:
     """
     Handle successful payment:
     1. Find order by transaction reference
@@ -73,7 +84,13 @@ async def _handle_payment_success(reference: str, data: dict, session: AsyncSess
     try:
         # Find order
         result = await session.execute(
-            select(Order).where(Order.transaction_ref == reference).with_for_update()
+            select(Order)
+            .options(
+                joinedload(Order.buyer),
+                joinedload(Order.seller).joinedload(SellerProfile.user),
+            )
+            .where(Order.transaction_ref == reference)
+            .with_for_update()
         )
         order = result.scalars().first()
         
@@ -115,6 +132,39 @@ async def _handle_payment_success(reference: str, data: dict, session: AsyncSess
         )
         
         await session.commit()
+
+        buyer_telegram_id = order.buyer.telegram_id if order.buyer else None
+        seller_telegram_id = order.seller.user.telegram_id if order.seller and order.seller.user else None
+        seller_username = order.seller.user.username if order.seller and order.seller.user else None
+        buyer_username = order.buyer.username if order.buyer else None
+
+        if bot and buyer_telegram_id:
+            seller_contact = f"@{seller_username}" if seller_username else "Seller handle not set"
+            try:
+                await bot.send_message(
+                    chat_id=int(buyer_telegram_id),
+                    text=(
+                        f"Payment confirmed for order #{order.id}.\n\n"
+                        f"Seller contact: {seller_contact}\n"
+                        "Please proceed to arrange delivery."
+                    ),
+                )
+            except Exception:
+                pass
+
+        if bot and seller_telegram_id:
+            buyer_contact = f"@{buyer_username}" if buyer_username else "Buyer handle not set"
+            try:
+                await bot.send_message(
+                    chat_id=int(seller_telegram_id),
+                    text=(
+                        f"You have a new paid order #{order.id}.\n\n"
+                        f"Buyer contact: {buyer_contact}\n"
+                        "Please prepare the item for delivery."
+                    ),
+                )
+            except Exception:
+                pass
         
         # Queue Celery task for auto-release
         # from tasks.escrow_release import release_escrow_auto
