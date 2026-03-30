@@ -63,3 +63,22 @@ async def safe_answer_callback(callback: CallbackQuery, **kwargs) -> bool:
         if _is_stale_callback_error(exc):
             return False
         raise
+
+
+async def safe_render_text_screen(callback: CallbackQuery, text: str, **kwargs) -> None:
+    """
+    Render a clean text screen for navigation actions.
+    If current callback message is a photo, delete it and send a new text message.
+    """
+    if not callback.message:
+        return
+
+    if callback.message.photo:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, **kwargs)
+        return
+
+    await safe_edit_text(callback, text, **kwargs)

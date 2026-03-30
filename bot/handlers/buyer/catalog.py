@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from bot.helpers.brand_assets import get_category_hero, get_empty_state
-from bot.helpers.telegram import safe_answer_callback, safe_edit_text
+from bot.helpers.telegram import safe_answer_callback, safe_edit_text, safe_render_text_screen
 from bot.keyboards.main_menu import get_catalog_categories
 from db.models import AccessorySubcategory, Category, Listing, SellerProfile
 
@@ -247,7 +247,7 @@ async def _show_category_page(
 async def browse_catalog(callback: CallbackQuery):
     await safe_answer_callback(callback)
     text = "Browse Catalog\n\nSelect a category to view available products:"
-    await safe_edit_text(callback, text, reply_markup=get_catalog_categories())
+    await safe_render_text_screen(callback, text, reply_markup=get_catalog_categories())
 
 
 @router.callback_query(F.data.startswith("browse_cat_"))

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.helpers.brand_assets import get_help_banner, get_welcome_banner
-from bot.helpers.telegram import safe_answer_callback, safe_edit_text
+from bot.helpers.telegram import safe_answer_callback, safe_edit_text, safe_render_text_screen
 from bot.keyboards.main_menu import get_main_menu_inline
 from db.models import User
 
@@ -61,11 +61,14 @@ async def start_handler(message: Message, session: AsyncSession):
 @router.callback_query(F.data == "back_to_menu")
 async def back_to_menu_handler(callback: CallbackQuery):
     await safe_answer_callback(callback)
-    await safe_edit_text(
-        callback,
+    menu_text = (
         "<b>VenDOOR Main Menu</b>\n"
         "buy. sell. secure.\n\n"
-        "What would you like to do today?",
+        "What would you like to do today?"
+    )
+    await safe_render_text_screen(
+        callback,
+        menu_text,
         parse_mode="HTML",
         reply_markup=get_main_menu_inline(),
     )
