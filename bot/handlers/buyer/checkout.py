@@ -37,19 +37,29 @@ async def start_checkout(callback: CallbackQuery, state: FSMContext, session: As
     if not listing:
         await safe_answer_callback(callback, text="Listing not found", show_alert=True)
         return
+    if not listing.available or listing.quantity <= 0:
+        await safe_answer_callback(callback, text="This item is out of stock", show_alert=True)
+        return
 
     await safe_answer_callback(callback)
 
     text = (
         f"<b>{listing.title}</b>\n\n"
         f"Price: NGN {listing.buyer_price:,.2f}\n"
+        f"Quantity Left: {listing.quantity}\n"
         "(Includes 5% platform fee)\n\n"
         "<b>Escrow Protection</b>\n"
         "Your payment is safe. Seller gets paid only after you confirm receipt.\n\n"
         "What is your delivery address?"
     )
-
-    await safe_edit_text(callback, text, parse_mode="HTML")
+    if callback.message:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, parse_mode="HTML")
+    else:
+        await callback.bot.send_message(chat_id=callback.from_user.id, text=text, parse_mode="HTML")
     await state.set_state(CheckoutStates.awaiting_delivery_address)
 
 
@@ -86,6 +96,10 @@ async def handle_delivery_details(message: Message, state: FSMContext, session: 
 
     result = await session.execute(select(Listing).where(Listing.id == listing_id))
     listing = result.scalars().first()
+    if not listing or not listing.available or listing.quantity <= 0:
+        await message.answer("This listing is currently out of stock.")
+        await state.clear()
+        return
 
     text = (
         "<b>Order Confirmation</b>\n\n"
@@ -126,6 +140,14 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
 
         result = await session.execute(select(Listing).where(Listing.id == listing_id))
         listing = result.scalars().first()
+        if not listing or not listing.available or listing.quantity <= 0:
+            await safe_edit_text(
+                callback,
+                "This item is out of stock now. Please choose another listing.",
+                reply_markup=get_main_menu_inline(),
+            )
+            await state.clear()
+            return
 
         order = Order(
             buyer_id=buyer.id,

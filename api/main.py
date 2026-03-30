@@ -625,6 +625,7 @@ async def list_all_listings(
                 ),
                 "base_price": str(listing.base_price),
                 "buyer_price": str(listing.buyer_price),
+                "quantity": listing.quantity,
                 "available": listing.available,
                 "image_url": listing.image_url,
                 "seller": {

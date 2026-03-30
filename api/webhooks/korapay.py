@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Order, OrderStatus
+from db.models import Listing, Order, OrderStatus
 from services.korapay import get_korapay_client
 from core.config import get_settings
 
@@ -73,16 +73,38 @@ async def _handle_payment_success(reference: str, data: dict, session: AsyncSess
     try:
         # Find order
         result = await session.execute(
-            select(Order).where(Order.transaction_ref == reference)
+            select(Order).where(Order.transaction_ref == reference).with_for_update()
         )
         order = result.scalars().first()
         
         if not order:
             return {"status": "error", "error": "Order not found"}
         
+        if order.status == OrderStatus.PAID:
+            return {
+                "status": "success",
+                "message": "Order already marked as paid",
+                "order_id": order.id,
+            }
+
+        listing_result = await session.execute(
+            select(Listing).where(Listing.id == order.listing_id).with_for_update()
+        )
+        listing = listing_result.scalars().first()
+        if not listing or not listing.available or listing.quantity <= 0:
+            order.status = OrderStatus.CANCELLED
+            await session.commit()
+            return {
+                "status": "error",
+                "error": "Listing is out of stock",
+                "order_id": order.id,
+            }
+
         # Update order status
         order.status = OrderStatus.PAID
         order.paid_at = datetime.utcnow()
+        listing.quantity -= 1
+        listing.available = listing.quantity > 0
         
         # Schedule automatic escrow release
         # (Celery task triggers after 48 hours)

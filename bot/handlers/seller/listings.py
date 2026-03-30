@@ -38,8 +38,22 @@ class ListingStates(StatesGroup):
     awaiting_image = State()
     awaiting_category = State()
     awaiting_accessory_subcategory = State()
+    awaiting_quantity = State()
     awaiting_base_price = State()
     confirming_listing = State()
+
+
+QUANTITY_ENABLED_CATEGORIES = {
+    Category.CLOTHES,
+    Category.JEWELRY,
+    Category.SKINCARE,
+    Category.BOOKS,
+    Category.SHOES,
+}
+
+
+def category_uses_quantity(category: Category) -> bool:
+    return category in QUANTITY_ENABLED_CATEGORIES
 
 
 @router.callback_query(F.data == "seller_listings")
@@ -80,6 +94,7 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
         text += (
             f"<b>{listing.title}</b>\n"
             f"Price: NGN {listing.buyer_price:,.2f}\n"
+            f"Quantity: {listing.quantity}\n"
             f"Status: {status}\n"
             f"Category: {format_category_label(listing.category, listing.accessory_subcategory)}\n\n"
         )
@@ -213,6 +228,16 @@ async def handle_listing_category(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(category=category, accessory_subcategory=None)
+    if category_uses_quantity(category):
+        await safe_edit_text(
+            callback,
+            "<b>Item Quantity</b>\n\nHow many units are available? (1-500)",
+            parse_mode="HTML",
+        )
+        await state.set_state(ListingStates.awaiting_quantity)
+        return
+
+    await state.update_data(quantity=1)
     await safe_edit_text(
         callback,
         "<b>Base Price (NGN)</b>\n\nEnter base price. Buyer pays 5% platform fee.",
@@ -234,6 +259,26 @@ async def handle_accessory_subcategory(callback: CallbackQuery, state: FSMContex
     await state.update_data(accessory_subcategory=accessory_subcategory)
     await safe_edit_text(
         callback,
+        "<b>Item Quantity</b>\n\nHow many units are available? (1-500)",
+        parse_mode="HTML",
+    )
+    await state.set_state(ListingStates.awaiting_quantity)
+
+
+@router.message(ListingStates.awaiting_quantity)
+async def handle_listing_quantity(message: Message, state: FSMContext):
+    raw_value = (message.text or "").strip()
+    if not raw_value.isdigit():
+        await message.reply("Please enter a valid quantity (number).")
+        return
+
+    quantity = int(raw_value)
+    if quantity < 1 or quantity > 500:
+        await message.reply("Quantity must be between 1 and 500.")
+        return
+
+    await state.update_data(quantity=quantity)
+    await message.answer(
         "<b>Base Price (NGN)</b>\n\nEnter base price. Buyer pays 5% platform fee.",
         parse_mode="HTML",
     )
@@ -260,6 +305,7 @@ async def handle_listing_price(message: Message, state: FSMContext):
         f"Description: {data.get('description')}\n"
         f"Image: {'Attached' if data.get('image_url') else 'Not attached'}\n"
         f"Category: {format_category_label(data.get('category'), data.get('accessory_subcategory'))}\n"
+        f"Quantity: {data.get('quantity', 1)}\n"
         f"Base Price: NGN {data.get('base_price'):,.2f}\n"
         f"Buyer Price: NGN {data.get('buyer_price'):,.2f}\n\n"
         "Create this listing?"
@@ -290,6 +336,7 @@ async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, s
             accessory_subcategory=data.get("accessory_subcategory"),
             base_price=data.get("base_price"),
             buyer_price=data.get("buyer_price"),
+            quantity=data.get("quantity", 1),
             available=True,
         )
         session.add(listing)
@@ -299,7 +346,8 @@ async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, s
             (
                 "<b>Listing Created</b>\n\n"
                 "Your product is now live.\n"
-                f"Listing ID: {listing.id}"
+                f"Listing ID: {listing.id}\n"
+                f"Quantity: {listing.quantity}"
             ),
             parse_mode="HTML",
             reply_markup=get_seller_actions(),

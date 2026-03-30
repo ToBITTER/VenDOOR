@@ -283,6 +283,7 @@ async def _render_listings_text(session: AsyncSession, limit: int = 10) -> str:
             f"<b>Listing ID:</b> {listing.id}\n"
             f"<b>Title:</b> {listing.title}\n"
             f"<b>Category:</b> {listing.category.value}\n"
+            f"<b>Quantity:</b> {listing.quantity}\n"
             f"<b>Available:</b> {'Yes' if listing.available else 'No'}\n"
             f"<b>Seller:</b> {seller_name}\n\n"
         )

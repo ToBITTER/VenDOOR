@@ -54,6 +54,7 @@ async def _fetch_category_listings(
         .options(joinedload(Listing.seller).joinedload(SellerProfile.user))
         .where(Listing.category == category)
         .where(Listing.available == True)
+        .where(Listing.quantity > 0)
         .order_by(
             SellerProfile.is_featured.desc(),
             SellerProfile.priority_score.desc(),
@@ -235,6 +236,7 @@ async def _show_category_page(
             f"{listing.description}\n\n"
             f"Category: {format_category_label(category, listing.accessory_subcategory)}\n"
             f"Price: NGN {listing.buyer_price:,.2f}\n"
+            f"Quantity Left: {listing.quantity}\n"
             f"Seller: {seller_name}"
         )
         await _send_listing_card(callback, listing, card_text)
@@ -333,6 +335,9 @@ async def initiate_buy(callback: CallbackQuery, state: FSMContext, session: Asyn
 
     if not listing:
         await safe_answer_callback(callback, text="Listing not found", show_alert=True)
+        return
+    if not listing.available or listing.quantity <= 0:
+        await safe_answer_callback(callback, text="This item is out of stock", show_alert=True)
         return
 
     await safe_answer_callback(callback)

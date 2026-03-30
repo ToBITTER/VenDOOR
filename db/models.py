@@ -162,6 +162,7 @@ class Listing(Base):
     )
     base_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     buyer_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)  # base_price * 1.05 (5% fee)
+    quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     image_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)  # Telegram file_id
     available: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
