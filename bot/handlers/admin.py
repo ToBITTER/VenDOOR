@@ -319,18 +319,30 @@ async def _get_broadcast_recipient_ids(session: AsyncSession, audience: str) -> 
     return [row[0] for row in recipient_result.all() if row[0]]
 
 
-async def _send_broadcast(bot, recipient_ids: list[str], message_text: str) -> tuple[int, int]:
+async def _send_broadcast(
+    bot,
+    recipient_ids: list[str],
+    message_text: str | None = None,
+    photo_file_id: str | None = None,
+    caption: str | None = None,
+) -> tuple[int, int]:
     sent = 0
     failed = 0
     for telegram_id in recipient_ids:
         try:
             chat_id = int(telegram_id)
-            await bot.send_message(chat_id=chat_id, text=message_text)
+            if photo_file_id:
+                await bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
+            else:
+                await bot.send_message(chat_id=chat_id, text=message_text or "")
             sent += 1
         except TelegramRetryAfter as exc:
             try:
                 await asyncio.sleep(exc.retry_after)
-                await bot.send_message(chat_id=chat_id, text=message_text)
+                if photo_file_id:
+                    await bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
+                else:
+                    await bot.send_message(chat_id=chat_id, text=message_text or "")
                 sent += 1
             except Exception:
                 failed += 1
@@ -967,9 +979,45 @@ async def choose_broadcast_audience(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.awaiting_broadcast_message)
     await safe_edit_text(
         callback,
-        f"Audience selected: <b>{audience}</b>\n\nNow type the message to broadcast.",
+        f"Audience selected: <b>{audience}</b>\n\nNow send text or send a photo (caption optional).",
         parse_mode="HTML",
         reply_markup=_delete_help_keyboard(),
+    )
+
+
+@router.message(AdminStates.awaiting_broadcast_message, F.photo)
+async def send_photo_broadcast_from_state(message: Message, state: FSMContext, session: AsyncSession):
+    if not _is_admin(message.from_user.id):
+        await message.reply("You are not authorized to use this command.")
+        await state.clear()
+        return
+
+    if not message.photo:
+        await message.reply("Please send a valid image.")
+        return
+
+    data = await state.get_data()
+    audience = data.get("broadcast_audience")
+    if not audience:
+        await state.clear()
+        await message.reply("Session expired. Open /admin_tools and try again.")
+        return
+
+    photo_file_id = message.photo[-1].file_id
+    caption = (message.caption or "").strip() or None
+
+    recipient_ids = await _get_broadcast_recipient_ids(session, str(audience))
+    sent, failed = await _send_broadcast(
+        message.bot,
+        recipient_ids,
+        photo_file_id=photo_file_id,
+        caption=caption,
+    )
+    await state.clear()
+    await message.reply(
+        f"Photo broadcast complete.\nAudience: {audience}\nRecipients: {len(recipient_ids)}\n"
+        f"Sent: {sent}\nFailed: {failed}",
+        reply_markup=_admin_tools_keyboard(),
     )
 
 
@@ -982,7 +1030,7 @@ async def send_broadcast_from_state(message: Message, state: FSMContext, session
 
     text = (message.text or "").strip()
     if not text:
-        await message.reply("Broadcast message cannot be empty.")
+        await message.reply("Broadcast message cannot be empty. Send text or send a photo.")
         return
 
     data = await state.get_data()
@@ -993,7 +1041,7 @@ async def send_broadcast_from_state(message: Message, state: FSMContext, session
         return
 
     recipient_ids = await _get_broadcast_recipient_ids(session, str(audience))
-    sent, failed = await _send_broadcast(message.bot, recipient_ids, text)
+    sent, failed = await _send_broadcast(message.bot, recipient_ids, message_text=text)
     await state.clear()
     await message.reply(
         f"Broadcast complete.\nAudience: {audience}\nRecipients: {len(recipient_ids)}\n"
