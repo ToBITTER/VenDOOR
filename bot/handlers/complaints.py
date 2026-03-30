@@ -12,6 +12,7 @@ from sqlalchemy import false, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from bot.helpers.brand_assets import get_empty_state
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from bot.keyboards.main_menu import get_main_menu_inline
 from db.models import Complaint, DisputeStatus, Order, OrderStatus, SellerProfile, User
@@ -55,12 +56,23 @@ async def start_complaint(callback: CallbackQuery, state: FSMContext, session: A
     orders = result.scalars().all()
 
     if not orders:
-        await safe_edit_text(
-            callback,
+        empty_image = get_empty_state("no_complaints")
+        empty_text = (
             "No orders available to file complaints.\n\n"
-            "Only orders in PAID or COMPLETED status can be disputed.",
-            reply_markup=get_main_menu_inline(),
+            "Only orders in PAID or COMPLETED status can be disputed."
         )
+        if empty_image:
+            await callback.message.answer_photo(
+                photo=empty_image,
+                caption=empty_text,
+                reply_markup=get_main_menu_inline(),
+            )
+        else:
+            await safe_edit_text(
+                callback,
+                empty_text,
+                reply_markup=get_main_menu_inline(),
+            )
         return
 
     keyboard = InlineKeyboardMarkup(

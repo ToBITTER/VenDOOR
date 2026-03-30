@@ -44,13 +44,13 @@ Keep filenames lowercase with underscores.
 - featured_vendor: assets/brand/templates/featured_vendor.png
 
 ## 7) Brand Style Guide
-- primary_color_hex:
-- secondary_color_hex:
-- accent_color_hex:
+- primary_color_hex: #1E3A8A
+- secondary_color_hex: #F2C94C
+- accent_color_hex: #27AE60
 - font_vibe: friendly / modern / bold / playful
 - photo_mood: bright / minimal / student-life
 
 ## 8) Voice Examples
-- line_1:
-- line_2:
-- line_3:
+- line_1: Trustworthy
+- line_2: Confident
+- line_3: Reliable

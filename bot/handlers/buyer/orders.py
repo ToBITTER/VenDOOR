@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from bot.helpers.brand_assets import get_empty_state
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from bot.keyboards.main_menu import get_main_menu_inline, get_order_actions
 from db.models import Order, OrderStatus, SellerProfile, User
@@ -36,11 +37,20 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
     orders = result.scalars().all()
 
     if not orders:
-        await safe_edit_text(
-            callback,
-            "You have not placed any orders yet.\n\nStart shopping now!",
-            reply_markup=get_main_menu_inline(),
-        )
+        empty_image = get_empty_state("no_orders")
+        empty_text = "You have not placed any orders yet.\n\nStart shopping now!"
+        if empty_image:
+            await callback.message.answer_photo(
+                photo=empty_image,
+                caption=empty_text,
+                reply_markup=get_main_menu_inline(),
+            )
+        else:
+            await safe_edit_text(
+                callback,
+                empty_text,
+                reply_markup=get_main_menu_inline(),
+            )
         return
 
     text = "<b>Your Orders</b>\n\n"

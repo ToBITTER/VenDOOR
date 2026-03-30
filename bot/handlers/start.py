@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.helpers.brand_assets import get_help_banner, get_welcome_banner
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from bot.keyboards.main_menu import get_main_menu_inline
 from db.models import User
@@ -41,11 +42,20 @@ async def start_handler(message: Message, session: AsyncSession):
         session.add(user)
         await session.commit()
 
-    await message.answer(
-        WELCOME_TEXT,
-        parse_mode="HTML",
-        reply_markup=get_main_menu_inline(),
-    )
+    welcome_banner = get_welcome_banner()
+    if welcome_banner:
+        await message.answer_photo(
+            photo=welcome_banner,
+            caption=WELCOME_TEXT,
+            parse_mode="HTML",
+            reply_markup=get_main_menu_inline(),
+        )
+    else:
+        await message.answer(
+            WELCOME_TEXT,
+            parse_mode="HTML",
+            reply_markup=get_main_menu_inline(),
+        )
 
 
 @router.callback_query(F.data == "back_to_menu")
@@ -85,4 +95,13 @@ async def help_handler(callback: CallbackQuery):
     )
 
     await safe_answer_callback(callback)
-    await safe_edit_text(callback, help_text, parse_mode="HTML", reply_markup=get_main_menu_inline())
+    help_banner = get_help_banner()
+    if help_banner:
+        await callback.message.answer_photo(
+            photo=help_banner,
+            caption=help_text,
+            parse_mode="HTML",
+            reply_markup=get_main_menu_inline(),
+        )
+    else:
+        await safe_edit_text(callback, help_text, parse_mode="HTML", reply_markup=get_main_menu_inline())
