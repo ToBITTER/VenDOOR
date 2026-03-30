@@ -38,6 +38,7 @@ async def set_default_commands(bot: Bot) -> None:
     if settings.admin_telegram_id:
         admin_commands = [
             BotCommand(command="pending_sellers", description="Review pending seller approvals"),
+            BotCommand(command="admin_tools", description="Open admin tools panel"),
         ]
         await bot.set_my_commands(
             admin_commands,

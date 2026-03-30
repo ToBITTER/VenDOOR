@@ -354,6 +354,79 @@ async def update_vendor_privileges(
     }
 
 
+@app.delete("/admin/vendors/{seller_id}")
+async def delete_vendor(
+    seller_id: int,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Delete a vendor profile and its listings when it has no transaction history.
+    """
+    from db.models import Order, SellerProfile
+
+    seller = await session.get(SellerProfile, seller_id)
+    if not seller:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    order_count_result = await session.execute(
+        select(func.count(Order.id)).where(Order.seller_id == seller_id)
+    )
+    order_count = order_count_result.scalar() or 0
+    if order_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete vendor with existing transactions",
+        )
+
+    await session.delete(seller)
+    await session.commit()
+    return {"ok": True, "deleted_vendor_id": seller_id}
+
+
+@app.delete("/admin/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Delete a user only when they have no buyer/seller transactions.
+    """
+    from db.models import Order, SellerProfile, User
+
+    user = await session.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    buyer_order_count_result = await session.execute(
+        select(func.count(Order.id)).where(Order.buyer_id == user_id)
+    )
+    buyer_order_count = buyer_order_count_result.scalar() or 0
+    if buyer_order_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete user with buyer transactions",
+        )
+
+    seller_result = await session.execute(select(SellerProfile.id).where(SellerProfile.user_id == user_id))
+    seller_id = seller_result.scalar_one_or_none()
+    if seller_id is not None:
+        seller_order_count_result = await session.execute(
+            select(func.count(Order.id)).where(Order.seller_id == seller_id)
+        )
+        seller_order_count = seller_order_count_result.scalar() or 0
+        if seller_order_count > 0:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete user with seller transactions",
+            )
+
+    await session.delete(user)
+    await session.commit()
+    return {"ok": True, "deleted_user_id": user_id}
+
+
 async def _send_message_with_retry(bot: Bot, chat_id: int, text: str) -> tuple[bool, str | None]:
     async with BROADCAST_SEMAPHORE:
         try:
