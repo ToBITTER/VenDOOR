@@ -15,6 +15,8 @@ from db.models import Category, Listing, SellerProfile
 
 router = Router()
 
+PAGE_SIZE = 10
+
 
 def format_category_label(category: Category) -> str:
     if category == Category.ELECTRONICS:
@@ -24,6 +26,12 @@ def format_category_label(category: Category) -> str:
     return category.value.title()
 
 
+def _short_title(title: str, limit: int = 24) -> str:
+    if len(title) <= limit:
+        return title
+    return f"{title[: limit - 1]}…"
+
+
 async def _fetch_category_listings(session: AsyncSession, category: Category) -> list[Listing]:
     result = await session.execute(
         select(Listing)
@@ -31,78 +39,86 @@ async def _fetch_category_listings(session: AsyncSession, category: Category) ->
         .where(Listing.category == category)
         .where(Listing.available == True)
         .order_by(Listing.created_at.desc())
-        .limit(30)
+        .limit(200)
     )
     return result.scalars().all()
 
 
-def _build_listing_keyboard(category: Category, listing: Listing, index: int, total: int) -> InlineKeyboardMarkup:
-    nav_row: list[InlineKeyboardButton] = []
-    if index > 0:
-        nav_row.append(
-            InlineKeyboardButton(
-                text="Prev",
-                callback_data=f"browse_item_{category.name}_{index - 1}",
-            )
-        )
-    if index < total - 1:
-        nav_row.append(
-            InlineKeyboardButton(
-                text="Next",
-                callback_data=f"browse_item_{category.name}_{index + 1}",
-            )
-        )
+def _build_category_page_keyboard(category: Category, listings: list[Listing], page: int) -> InlineKeyboardMarkup:
+    start = page * PAGE_SIZE
+    end = min(start + PAGE_SIZE, len(listings))
+    page_items = listings[start:end]
 
     rows: list[list[InlineKeyboardButton]] = []
+    for idx, listing in enumerate(page_items, start=start + 1):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{idx}. {_short_title(listing.title)}",
+                    callback_data=f"browse_detail_{listing.id}_{category.name}_{page}",
+                )
+            ]
+        )
+
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(
+            InlineKeyboardButton(
+                text="Prev 10",
+                callback_data=f"browse_page_{category.name}_{page - 1}",
+            )
+        )
+    if end < len(listings):
+        nav_row.append(
+            InlineKeyboardButton(
+                text="Next 10",
+                callback_data=f"browse_page_{category.name}_{page + 1}",
+            )
+        )
     if nav_row:
         rows.append(nav_row)
-    rows.extend(
-        [
-            [InlineKeyboardButton(text="Buy Now", callback_data=f"buy_listing_{listing.id}")],
-            [InlineKeyboardButton(text="Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
-            [InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")],
-        ]
-    )
+
+    rows.append([InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _show_listing(
+async def _show_category_page(
     callback: CallbackQuery,
     category: Category,
     listings: list[Listing],
-    index: int,
+    page: int,
 ) -> None:
-    listing = listings[index]
-    total = len(listings)
-    text = (
-        f"<b>{listing.title}</b>\n"
-        f"Item {index + 1}/{total}\n\n"
-        f"{listing.description}\n\n"
-        f"Category: {format_category_label(category)}\n"
-        f"Price: NGN {listing.buyer_price:,.2f}\n"
-        f"Seller: {listing.seller.user.first_name}"
-    )
-
-    keyboard = _build_listing_keyboard(category, listing, index, total)
-
-    if listing.image_url:
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        await callback.message.answer_photo(
-            photo=listing.image_url,
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=keyboard,
-        )
-    else:
+    if not listings:
         await safe_edit_text(
             callback,
-            text,
-            parse_mode="HTML",
-            reply_markup=keyboard,
+            f"No products available in {format_category_label(category)}.\n\nTry another category.",
+            reply_markup=get_catalog_categories(),
         )
+        return
+
+    total_pages = (len(listings) - 1) // PAGE_SIZE + 1
+    if page < 0:
+        page = 0
+    if page >= total_pages:
+        page = total_pages - 1
+
+    start = page * PAGE_SIZE
+    end = min(start + PAGE_SIZE, len(listings))
+    page_items = listings[start:end]
+
+    text = (
+        f"<b>{format_category_label(category)} Listings</b>\n"
+        f"Page {page + 1}/{total_pages} ({len(listings)} total)\n\n"
+    )
+    for idx, listing in enumerate(page_items, start=start + 1):
+        seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
+        text += (
+            f"{idx}. <b>{listing.title}</b>\n"
+            f"NGN {listing.buyer_price:,.2f} • {seller_name}\n\n"
+        )
+
+    keyboard = _build_category_page_keyboard(category, listings, page)
+    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "browse_catalog")
@@ -128,25 +144,36 @@ async def browse_category(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
 
     listings = await _fetch_category_listings(session, category)
+    await _show_category_page(callback, category, listings, page=0)
 
-    if not listings:
+
+@router.callback_query(F.data.startswith("browse_page_"))
+async def browse_category_page(callback: CallbackQuery, session: AsyncSession):
+    await safe_answer_callback(callback)
+    try:
+        _, _, category_name, page_str = callback.data.split("_", maxsplit=3)
+        category = Category[category_name]
+        page = int(page_str)
+    except Exception:
         await safe_edit_text(
             callback,
-            f"No products available in {format_category_label(category)}.\n\nTry another category.",
+            "Unable to load that page. Please browse the category again.",
             reply_markup=get_catalog_categories(),
         )
         return
 
-    await _show_listing(callback, category, listings, index=0)
+    listings = await _fetch_category_listings(session, category)
+    await _show_category_page(callback, category, listings, page=page)
 
 
-@router.callback_query(F.data.startswith("browse_item_"))
-async def browse_category_item(callback: CallbackQuery, session: AsyncSession):
+@router.callback_query(F.data.startswith("browse_detail_"))
+async def browse_listing_detail(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
     try:
-        _, _, category_name, index_str = callback.data.split("_", maxsplit=3)
+        _, _, listing_id_str, category_name, page_str = callback.data.split("_", maxsplit=4)
+        listing_id = int(listing_id_str)
         category = Category[category_name]
-        index = int(index_str)
+        page = int(page_str)
     except Exception:
         await safe_edit_text(
             callback,
@@ -155,18 +182,57 @@ async def browse_category_item(callback: CallbackQuery, session: AsyncSession):
         )
         return
 
-    listings = await _fetch_category_listings(session, category)
-    if not listings:
+    result = await session.execute(
+        select(Listing)
+        .options(joinedload(Listing.seller).joinedload(SellerProfile.user))
+        .where(Listing.id == listing_id)
+        .where(Listing.available == True)
+    )
+    listing = result.scalars().first()
+    if not listing:
         await safe_edit_text(
             callback,
-            f"No products available in {format_category_label(category)}.\n\nTry another category.",
+            "Listing not found.",
             reply_markup=get_catalog_categories(),
         )
         return
 
-    if index < 0 or index >= len(listings):
-        index = 0
-    await _show_listing(callback, category, listings, index=index)
+    seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
+    text = (
+        f"<b>{listing.title}</b>\n\n"
+        f"{listing.description}\n\n"
+        f"Category: {format_category_label(category)}\n"
+        f"Price: NGN {listing.buyer_price:,.2f}\n"
+        f"Seller: {seller_name}"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Buy Now", callback_data=f"buy_listing_{listing.id}")],
+            [InlineKeyboardButton(text="Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
+            [InlineKeyboardButton(text="Back to List", callback_data=f"browse_page_{category.name}_{page}")],
+            [InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")],
+        ]
+    )
+
+    if listing.image_url:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer_photo(
+            photo=listing.image_url,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+    else:
+        await safe_edit_text(
+            callback,
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
 
 
 @router.callback_query(F.data.startswith("buy_listing_"))
