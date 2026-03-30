@@ -98,7 +98,20 @@ async def _show_category_page(
         "Each listing is shown below with its own image."
     )
     control_keyboard = _build_category_page_keyboard(category, len(listings), page)
-    await safe_edit_text(callback, control_text, parse_mode="HTML", reply_markup=control_keyboard)
+    # If callback came from a photo message, editing text will mutate caption on that image.
+    # Create a fresh text control message instead, so stale images are not reused as headers.
+    if callback.message and callback.message.photo:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(
+            control_text,
+            parse_mode="HTML",
+            reply_markup=control_keyboard,
+        )
+    else:
+        await safe_edit_text(callback, control_text, parse_mode="HTML", reply_markup=control_keyboard)
 
     for idx, listing in enumerate(page_items, start=start + 1):
         seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
