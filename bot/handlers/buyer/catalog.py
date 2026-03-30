@@ -2,7 +2,10 @@
 Buyer catalog and product browsing handler.
 """
 
+import time
+
 from aiogram import F, Router
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
@@ -16,6 +19,8 @@ from db.models import Category, Listing, SellerProfile
 router = Router()
 
 PAGE_SIZE = 10
+CACHE_TTL_SECONDS = 20
+_CATEGORY_CACHE: dict[str, tuple[float, list[Listing]]] = {}
 
 
 def format_category_label(category: Category) -> str:
@@ -27,6 +32,12 @@ def format_category_label(category: Category) -> str:
 
 
 async def _fetch_category_listings(session: AsyncSession, category: Category) -> list[Listing]:
+    cache_key = category.name
+    now = time.time()
+    cached = _CATEGORY_CACHE.get(cache_key)
+    if cached and now - cached[0] <= CACHE_TTL_SECONDS:
+        return cached[1]
+
     result = await session.execute(
         select(Listing)
         .options(joinedload(Listing.seller).joinedload(SellerProfile.user))
@@ -35,7 +46,9 @@ async def _fetch_category_listings(session: AsyncSession, category: Category) ->
         .order_by(Listing.created_at.desc())
         .limit(200)
     )
-    return result.scalars().all()
+    listings = result.scalars().all()
+    _CATEGORY_CACHE[cache_key] = (now, listings)
+    return listings
 
 
 def _build_category_page_keyboard(category: Category, total_items: int, page: int) -> InlineKeyboardMarkup:
@@ -70,6 +83,40 @@ def _build_listing_card_keyboard(listing: Listing) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
         ]
     )
+
+
+async def _send_listing_card(callback: CallbackQuery, listing: Listing, card_text: str) -> None:
+    card_keyboard = _build_listing_card_keyboard(listing)
+    for _ in range(2):
+        try:
+            if listing.image_url:
+                await callback.message.answer_photo(
+                    photo=listing.image_url,
+                    caption=card_text,
+                    parse_mode="HTML",
+                    reply_markup=card_keyboard,
+                )
+            else:
+                await callback.message.answer(
+                    card_text,
+                    parse_mode="HTML",
+                    reply_markup=card_keyboard,
+                )
+            return
+        except TelegramRetryAfter as exc:
+            await safe_answer_callback(
+                callback,
+                text="Too many requests right now, retrying...",
+                show_alert=False,
+            )
+            await time_async_sleep(exc.retry_after)
+
+
+async def time_async_sleep(seconds: float) -> None:
+    # Isolated helper to keep send retries readable.
+    import asyncio
+
+    await asyncio.sleep(seconds)
 
 
 async def _show_category_page(
@@ -122,21 +169,7 @@ async def _show_category_page(
             f"Price: NGN {listing.buyer_price:,.2f}\n"
             f"Seller: {seller_name}"
         )
-        card_keyboard = _build_listing_card_keyboard(listing)
-
-        if listing.image_url:
-            await callback.message.answer_photo(
-                photo=listing.image_url,
-                caption=card_text,
-                parse_mode="HTML",
-                reply_markup=card_keyboard,
-            )
-        else:
-            await callback.message.answer(
-                card_text,
-                parse_mode="HTML",
-                reply_markup=card_keyboard,
-            )
+        await _send_listing_card(callback, listing, card_text)
 
 
 @router.callback_query(F.data == "browse_catalog")

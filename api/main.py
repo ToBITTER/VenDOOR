@@ -22,6 +22,7 @@ from bot.main import set_default_commands
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+UPDATE_SEMAPHORE = asyncio.Semaphore(20)
 
 
 def require_admin(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
@@ -54,10 +55,11 @@ async def _configure_bot(bot: Bot) -> None:
 
 
 async def _run_update(dispatcher: Dispatcher, bot: Bot, update: Update) -> None:
-    try:
-        await dispatcher.feed_update(bot, update)
-    except Exception:
-        logger.exception("Unhandled exception while processing Telegram update")
+    async with UPDATE_SEMAPHORE:
+        try:
+            await dispatcher.feed_update(bot, update)
+        except Exception:
+            logger.exception("Unhandled exception while processing Telegram update")
 
 
 @asynccontextmanager
