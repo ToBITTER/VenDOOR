@@ -23,7 +23,10 @@ settings = get_settings()
 class SellerRegistrationStates(StatesGroup):
     awaiting_student_choice = State()
     awaiting_student_email = State()
+    awaiting_hall = State()
+    awaiting_room_number = State()
     awaiting_id_document = State()
+    awaiting_address = State()
     awaiting_bank_code = State()
     awaiting_account_number = State()
     awaiting_account_name = State()
@@ -78,7 +81,7 @@ async def handle_student_yes(callback: CallbackQuery, state: FSMContext):
         callback,
         "<b>Student Email</b>\n\n"
         "Please enter your university email address.\n"
-        "Example: student@university.edu",
+        "Example: example@stu.cu.edu.ng",
         parse_mode="HTML",
     )
     await state.set_state(SellerRegistrationStates.awaiting_student_email)
@@ -110,8 +113,38 @@ async def handle_student_email(message: Message, state: FSMContext):
     await state.update_data(student_email=email)
 
     await message.answer(
-        "<b>ID Document</b>\n\n"
-        "Please send a photo of your student ID or university ID card.",
+        "<b>Hall</b>\n\n"
+        "Enter your hall of residence.",
+        parse_mode="HTML",
+    )
+    await state.set_state(SellerRegistrationStates.awaiting_hall)
+
+
+@router.message(SellerRegistrationStates.awaiting_hall)
+async def handle_hall(message: Message, state: FSMContext):
+    hall = message.text.strip()
+    if len(hall) < 2:
+        await message.reply("Please enter a valid hall name.")
+        return
+
+    await state.update_data(hall=hall)
+    await message.answer(
+        "<b>Room Number</b>\n\nEnter your room number.",
+        parse_mode="HTML",
+    )
+    await state.set_state(SellerRegistrationStates.awaiting_room_number)
+
+
+@router.message(SellerRegistrationStates.awaiting_room_number)
+async def handle_room_number(message: Message, state: FSMContext):
+    room_number = message.text.strip()
+    if len(room_number) < 1:
+        await message.reply("Please enter your room number.")
+        return
+
+    await state.update_data(room_number=room_number)
+    await message.answer(
+        "<b>ID Document</b>\n\nPlease send a photo of your student ID card.",
         parse_mode="HTML",
     )
     await state.set_state(SellerRegistrationStates.awaiting_id_document)
@@ -121,7 +154,33 @@ async def handle_student_email(message: Message, state: FSMContext):
 async def handle_id_document(message: Message, state: FSMContext):
     file_id = message.photo[-1].file_id
     await state.update_data(id_document_url=file_id)
+    data = await state.get_data()
 
+    if data.get("is_student"):
+        await message.answer(
+            "<b>Bank Details</b>\n\n"
+            "Enter your bank code.\n"
+            "Example: 033 (First Bank), 044 (Access Bank), 050 (Ecobank)",
+            parse_mode="HTML",
+        )
+        await state.set_state(SellerRegistrationStates.awaiting_bank_code)
+        return
+
+    await message.answer(
+        "<b>Address</b>\n\nEnter your current residential address.",
+        parse_mode="HTML",
+    )
+    await state.set_state(SellerRegistrationStates.awaiting_address)
+
+
+@router.message(SellerRegistrationStates.awaiting_address)
+async def handle_address(message: Message, state: FSMContext):
+    address = message.text.strip()
+    if len(address) < 5:
+        await message.reply("Please enter a valid address.")
+        return
+
+    await state.update_data(address=address)
     await message.answer(
         "<b>Bank Details</b>\n\n"
         "Enter your bank code.\n"
@@ -180,6 +239,10 @@ async def handle_account_name(message: Message, state: FSMContext):
 
     if is_student:
         confirmation_text += f"<b>Email:</b> {data.get('student_email')}\n"
+        confirmation_text += f"<b>Hall:</b> {data.get('hall')}\n"
+        confirmation_text += f"<b>Room Number:</b> {data.get('room_number')}\n"
+    else:
+        confirmation_text += f"<b>Address:</b> {data.get('address')}\n"
 
     confirmation_text += (
         f"<b>Bank Code:</b> {data.get('bank_code')}\n"
@@ -212,6 +275,9 @@ async def confirm_seller_registration(callback: CallbackQuery, state: FSMContext
             user_id=user.id,
             is_student=data.get("is_student", False),
             student_email=data.get("student_email"),
+            hall=data.get("hall"),
+            room_number=data.get("room_number"),
+            address=data.get("address"),
             id_document_url=data.get("id_document_url"),
             verified=False,
             bank_code=data.get("bank_code"),

@@ -102,6 +102,9 @@ class SellerProfile(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False, index=True)
     is_student: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     student_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    hall: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    room_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    address: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     id_document_url: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)  # Telegram file_id
     verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     bank_code: Mapped[str] = mapped_column(String(10), nullable=False)
