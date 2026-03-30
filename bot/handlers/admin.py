@@ -424,7 +424,8 @@ async def review_seller(message: Message, session: AsyncSession):
         await message.reply("You are not authorized to use this command.")
         return
 
-    seller_identifier = message.text.split("_")[-1]
+    command_text = (message.text or "").strip()
+    seller_identifier = command_text.split("_")[-1] if command_text else ""
     seller = await _find_seller_by_identifier(session, seller_identifier, with_user=True)
     if not seller:
         await message.reply("Seller not found.")
@@ -459,7 +460,8 @@ async def delete_listing_by_command(message: Message, session: AsyncSession):
         await message.reply("You are not authorized to use this command.")
         return
 
-    listing_identifier = message.text.split("_")[-1]
+    command_text = (message.text or "").strip()
+    listing_identifier = command_text.split("_")[-1] if command_text else ""
     listing = await _find_listing_by_identifier(session, listing_identifier)
     if not listing:
         await message.reply("Listing not found.")
@@ -484,7 +486,8 @@ async def delete_vendor_by_command(message: Message, session: AsyncSession):
         await message.reply("You are not authorized to use this command.")
         return
 
-    seller_identifier = message.text.split("_")[-1]
+    command_text = (message.text or "").strip()
+    seller_identifier = command_text.split("_")[-1] if command_text else ""
     seller = await _find_seller_by_identifier(session, seller_identifier)
     if not seller:
         await message.reply("Vendor not found.")
@@ -509,7 +512,8 @@ async def delete_user_by_command(message: Message, session: AsyncSession):
         await message.reply("You are not authorized to use this command.")
         return
 
-    user_id = int(message.text.split("_")[-1])
+    command_text = (message.text or "").strip()
+    user_id = int(command_text.split("_")[-1])
     user = await session.get(User, user_id)
     if not user:
         await message.reply("User not found.")
@@ -578,9 +582,13 @@ async def broadcast_from_admin_chat(message: Message, session: AsyncSession):
         await message.reply("You are not authorized to use this command.")
         return
 
-    first_space = message.text.find(" ")
-    header = message.text[:first_space]
-    body = message.text[first_space + 1 :].strip()
+    text_raw = (message.text or "").strip()
+    first_space = text_raw.find(" ")
+    if first_space <= 0:
+        await message.reply("Usage: /broadcast_all Your message")
+        return
+    header = text_raw[:first_space]
+    body = text_raw[first_space + 1 :].strip()
     audience = header.replace("/broadcast_", "")
     if not body:
         await message.reply("Message body cannot be empty.")

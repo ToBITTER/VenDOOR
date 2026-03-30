@@ -146,7 +146,7 @@ async def start_create_listing(callback: CallbackQuery, state: FSMContext, sessi
 
 @router.message(ListingStates.awaiting_title)
 async def handle_listing_title(message: Message, state: FSMContext):
-    title = message.text.strip()
+    title = (message.text or "").strip()
     if len(title) < 5:
         await message.reply("Title must be at least 5 characters.")
         return
@@ -160,7 +160,7 @@ async def handle_listing_title(message: Message, state: FSMContext):
 
 @router.message(ListingStates.awaiting_description)
 async def handle_listing_description(message: Message, state: FSMContext):
-    description = message.text.strip()
+    description = (message.text or "").strip()
     if len(description) < 10 or len(description) > 500:
         await message.reply("Description must be 10-500 characters.")
         return
@@ -289,7 +289,7 @@ async def handle_listing_quantity(message: Message, state: FSMContext):
 @router.message(ListingStates.awaiting_base_price)
 async def handle_listing_price(message: Message, state: FSMContext):
     try:
-        price = Decimal(message.text.strip())
+        price = Decimal((message.text or "").strip())
         if price <= 0:
             raise ValueError()
     except Exception:

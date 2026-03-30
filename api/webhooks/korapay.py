@@ -4,6 +4,7 @@ Processes payment confirmations and updates order statuses in the database.
 """
 
 from datetime import datetime, timedelta
+import logging
 from aiogram import Bot
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,7 @@ from services.korapay import get_korapay_client
 from core.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 async def handle_korapay_webhook(
@@ -40,6 +42,9 @@ async def handle_korapay_webhook(
     """
     
     try:
+        if not isinstance(webhook_data, dict):
+            return {"status": "error", "error": "invalid payload type"}
+
         event = webhook_data.get("event")
         data = webhook_data.get("data", {})
         reference = data.get("ref")
@@ -64,7 +69,7 @@ async def handle_korapay_webhook(
             return {"status": "ignored", "event": event}
     
     except Exception as e:
-        print(f"Webhook processing error: {e}")
+        logger.exception("Webhook processing error")
         return {"status": "error", "error": str(e)}
 
 
@@ -96,7 +101,14 @@ async def _handle_payment_success(
         
         if not order:
             return {"status": "error", "error": "Order not found"}
-        
+
+        if order.status not in (OrderStatus.PENDING, OrderStatus.PAID):
+            return {
+                "status": "ignored",
+                "message": f"Order state {order.status.value} cannot transition to PAID",
+                "order_id": order.id,
+            }
+
         if order.status == OrderStatus.PAID:
             return {
                 "status": "success",
@@ -181,7 +193,7 @@ async def _handle_payment_success(
     
     except Exception as e:
         await session.rollback()
-        print(f"Payment success handler error: {e}")
+        logger.exception("Payment success handler error")
         return {"status": "error", "error": str(e)}
 
 
@@ -199,8 +211,22 @@ async def _handle_payment_failed(reference: str, session: AsyncSession) -> dict:
         
         if not order:
             return {"status": "error", "error": "Order not found"}
-        
-        # Cancel order
+
+        if order.status == OrderStatus.CANCELLED:
+            return {
+                "status": "success",
+                "message": "Order already cancelled",
+                "order_id": order.id,
+            }
+
+        if order.status != OrderStatus.PENDING:
+            return {
+                "status": "ignored",
+                "message": f"Order state {order.status.value} will not be cancelled by failed payment callback",
+                "order_id": order.id,
+            }
+
+        # Cancel pending order only
         order.status = OrderStatus.CANCELLED
         await session.commit()
         
@@ -218,5 +244,5 @@ async def _handle_payment_failed(reference: str, session: AsyncSession) -> dict:
     
     except Exception as e:
         await session.rollback()
-        print(f"Payment failed handler error: {e}")
+        logger.exception("Payment failed handler error")
         return {"status": "error", "error": str(e)}

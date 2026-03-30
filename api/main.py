@@ -5,9 +5,12 @@ Handles webhooks, API endpoints for payment callbacks, and administrative operat
 
 import asyncio
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,6 +117,42 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    """
+    Attach a request ID for traceability and prevent uncaught errors from crashing request handling.
+    """
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    request.state.request_id = request_id
+    start_time = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "Unhandled API exception request_id=%s method=%s path=%s",
+            request_id,
+            request.method,
+            request.url.path,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error", "request_id": request_id},
+            headers={"X-Request-ID": request_id},
+        )
+
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    if duration_ms > 2000:
+        logger.warning(
+            "Slow request request_id=%s method=%s path=%s duration_ms=%.1f",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
 # ============================================================================
 # Health Check Endpoint
 # ============================================================================
@@ -173,8 +212,13 @@ async def telegram_webhook_handler(request: Request):
     bot: Bot = app.state.bot
     dispatcher: Dispatcher = app.state.dispatcher
 
-    update_data = await request.json()
-    update = Update.model_validate(update_data)
+    try:
+        update_data = await request.json()
+        update = Update.model_validate(update_data)
+    except Exception:
+        logger.exception("Invalid Telegram webhook payload")
+        return {"ok": False, "error": "invalid_payload"}
+
     # Process update in background so webhook responds quickly to Telegram.
     asyncio.create_task(_run_update(dispatcher, bot, update))
 

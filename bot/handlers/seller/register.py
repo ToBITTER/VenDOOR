@@ -104,7 +104,10 @@ async def handle_student_no(callback: CallbackQuery, state: FSMContext):
 
 @router.message(SellerRegistrationStates.awaiting_student_email)
 async def handle_student_email(message: Message, state: FSMContext):
-    email = message.text.strip().lower()
+    email = (message.text or "").strip().lower()
+    if not email:
+        await message.reply("Please enter your student email.")
+        return
 
     if not email.endswith("@stu.cu.edu.ng"):
         await message.reply("Use your CU student email ending with @stu.cu.edu.ng.")
@@ -122,7 +125,7 @@ async def handle_student_email(message: Message, state: FSMContext):
 
 @router.message(SellerRegistrationStates.awaiting_hall)
 async def handle_hall(message: Message, state: FSMContext):
-    hall = message.text.strip()
+    hall = (message.text or "").strip()
     if len(hall) < 2:
         await message.reply("Please enter a valid hall name.")
         return
@@ -137,7 +140,7 @@ async def handle_hall(message: Message, state: FSMContext):
 
 @router.message(SellerRegistrationStates.awaiting_room_number)
 async def handle_room_number(message: Message, state: FSMContext):
-    room_number = message.text.strip()
+    room_number = (message.text or "").strip()
     if len(room_number) < 1:
         await message.reply("Please enter your room number.")
         return
@@ -175,7 +178,7 @@ async def handle_id_document(message: Message, state: FSMContext):
 
 @router.message(SellerRegistrationStates.awaiting_address)
 async def handle_address(message: Message, state: FSMContext):
-    address = message.text.strip()
+    address = (message.text or "").strip()
     if len(address) < 5:
         await message.reply("Please enter a valid address.")
         return
@@ -192,7 +195,7 @@ async def handle_address(message: Message, state: FSMContext):
 
 @router.message(SellerRegistrationStates.awaiting_bank_code)
 async def handle_bank_code(message: Message, state: FSMContext):
-    bank_code = message.text.strip()
+    bank_code = (message.text or "").strip()
 
     if len(bank_code) < 2:
         await message.reply("Please enter a valid bank code.")
@@ -210,7 +213,7 @@ async def handle_bank_code(message: Message, state: FSMContext):
 
 @router.message(SellerRegistrationStates.awaiting_account_number)
 async def handle_account_number(message: Message, state: FSMContext):
-    account_number = message.text.strip()
+    account_number = (message.text or "").strip()
 
     if not account_number.isdigit() or len(account_number) < 8:
         await message.reply("Please enter a valid account number (8-10 digits).")
@@ -228,7 +231,10 @@ async def handle_account_number(message: Message, state: FSMContext):
 
 @router.message(SellerRegistrationStates.awaiting_account_name)
 async def handle_account_name(message: Message, state: FSMContext):
-    account_name = message.text.strip()
+    account_name = (message.text or "").strip()
+    if len(account_name) < 2:
+        await message.reply("Please enter a valid account name.")
+        return
     data = await state.get_data()
 
     is_student = data.get("is_student", False)

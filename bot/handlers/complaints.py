@@ -130,7 +130,7 @@ async def select_complaint_order(callback: CallbackQuery, state: FSMContext, ses
 
 @router.message(ComplaintStates.awaiting_subject)
 async def handle_complaint_subject(message: Message, state: FSMContext):
-    subject = message.text.strip()
+    subject = (message.text or "").strip()
 
     if len(subject) < 5:
         await message.reply("Please provide a subject with at least 5 characters.")
@@ -149,7 +149,7 @@ async def handle_complaint_subject(message: Message, state: FSMContext):
 
 @router.message(ComplaintStates.awaiting_description)
 async def handle_complaint_description(message: Message, state: FSMContext):
-    description = message.text.strip()
+    description = (message.text or "").strip()
 
     if len(description) < 10:
         await message.reply("Please provide more details (at least 10 characters).")

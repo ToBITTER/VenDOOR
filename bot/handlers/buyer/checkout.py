@@ -65,7 +65,7 @@ async def start_checkout(callback: CallbackQuery, state: FSMContext, session: As
 
 @router.message(CheckoutStates.awaiting_delivery_address)
 async def handle_delivery_address(message: Message, state: FSMContext):
-    address = message.text.strip()
+    address = (message.text or "").strip()
 
     if len(address) < 10:
         await message.reply("Please provide a full delivery address.")
@@ -85,7 +85,10 @@ async def handle_delivery_address(message: Message, state: FSMContext):
 
 @router.message(CheckoutStates.awaiting_delivery_details)
 async def handle_delivery_details(message: Message, state: FSMContext, session: AsyncSession):
-    details = message.text.strip()
+    details = (message.text or "").strip()
+    if not details:
+        await message.reply("Please enter delivery details or type 'None'.")
+        return
     if details.lower() == "none":
         details = None
 
@@ -137,13 +140,43 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
     try:
         result = await session.execute(select(User).where(User.telegram_id == buyer_telegram_id))
         buyer = result.scalars().first()
+        if not buyer:
+            await safe_edit_text(
+                callback,
+                "Buyer account not found. Please send /start and try again.",
+                reply_markup=get_main_menu_inline(),
+            )
+            await state.clear()
+            return
 
-        result = await session.execute(select(Listing).where(Listing.id == listing_id))
+        result = await session.execute(select(Listing).where(Listing.id == listing_id).with_for_update())
         listing = result.scalars().first()
         if not listing or not listing.available or listing.quantity <= 0:
             await safe_edit_text(
                 callback,
                 "This item is out of stock now. Please choose another listing.",
+                reply_markup=get_main_menu_inline(),
+            )
+            await state.clear()
+            return
+
+        pending_order_result = await session.execute(
+            select(Order)
+            .where(Order.buyer_id == buyer.id)
+            .where(Order.listing_id == listing.id)
+            .where(Order.status == OrderStatus.PENDING)
+            .order_by(Order.created_at.desc())
+            .limit(1)
+        )
+        existing_pending_order = pending_order_result.scalars().first()
+        if existing_pending_order:
+            await safe_edit_text(
+                callback,
+                (
+                    "You already have a pending payment for this item.\n\n"
+                    f"Pending Order ID: {existing_pending_order.id}\n"
+                    "Please complete it first before creating another one."
+                ),
                 reply_markup=get_main_menu_inline(),
             )
             await state.clear()
