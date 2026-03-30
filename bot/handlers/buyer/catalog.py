@@ -16,6 +16,14 @@ from db.models import Category, Listing, SellerProfile
 router = Router()
 
 
+def format_category_label(category: Category) -> str:
+    if category == Category.ELECTRONICS:
+        return "Laptop"
+    if category == Category.SKINCARE:
+        return "Skin Care"
+    return category.value.title()
+
+
 @router.callback_query(F.data == "browse_catalog")
 async def browse_catalog(callback: CallbackQuery):
     await safe_answer_callback(callback)
@@ -51,7 +59,7 @@ async def browse_category(callback: CallbackQuery, session: AsyncSession):
     if not listings:
         await safe_edit_text(
             callback,
-            f"No products available in {category.value}.\n\nTry another category.",
+            f"No products available in {format_category_label(category)}.\n\nTry another category.",
             reply_markup=get_catalog_categories(),
         )
         return
@@ -60,7 +68,7 @@ async def browse_category(callback: CallbackQuery, session: AsyncSession):
     text = (
         f"{listing.title}\n\n"
         f"{listing.description}\n\n"
-        f"Category: {category.value}\n"
+        f"Category: {format_category_label(category)}\n"
         f"Price: NGN {listing.buyer_price:,.2f}\n"
         f"Seller: {listing.seller.user.first_name}"
     )
@@ -73,11 +81,19 @@ async def browse_category(callback: CallbackQuery, session: AsyncSession):
         ]
     )
 
-    await safe_edit_text(
-        callback,
-        text,
-        reply_markup=keyboard,
-    )
+    if listing.image_url:
+        await callback.message.answer_photo(
+            photo=listing.image_url,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+    else:
+        await safe_edit_text(
+            callback,
+            text,
+            reply_markup=keyboard,
+        )
 
 
 @router.callback_query(F.data.startswith("buy_listing_"))

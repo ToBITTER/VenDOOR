@@ -19,6 +19,14 @@ from db.models import Category, Listing, SellerProfile, User
 router = Router()
 
 
+def format_category_label(category: Category) -> str:
+    if category == Category.ELECTRONICS:
+        return "Laptop"
+    if category == Category.SKINCARE:
+        return "Skin Care"
+    return category.value.title()
+
+
 class ListingStates(StatesGroup):
     awaiting_title = State()
     awaiting_description = State()
@@ -67,7 +75,7 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
             f"<b>{listing.title}</b>\n"
             f"Price: NGN {listing.buyer_price:,.2f}\n"
             f"Status: {status}\n"
-            f"Category: {listing.category.value}\n\n"
+            f"Category: {format_category_label(listing.category)}\n\n"
         )
 
     keyboard = InlineKeyboardMarkup(
@@ -152,7 +160,8 @@ async def handle_listing_image(message: Message, state: FSMContext):
         ("iPods", "cat_IPODS"),
         ("Jewelry", "cat_JEWELRY"),
         ("Clothes", "cat_CLOTHES"),
-        ("Electronics", "cat_ELECTRONICS"),
+        ("Laptop", "cat_ELECTRONICS"),
+        ("Skin Care", "cat_SKINCARE"),
         ("Books", "cat_BOOKS"),
         ("Shoes", "cat_SHOES"),
         ("Others", "cat_OTHERS"),
@@ -207,7 +216,7 @@ async def handle_listing_price(message: Message, state: FSMContext):
         f"Title: {data.get('title')}\n"
         f"Description: {data.get('description')}\n"
         f"Image: {'Attached' if data.get('image_url') else 'Not attached'}\n"
-        f"Category: {data.get('category').value}\n"
+        f"Category: {format_category_label(data.get('category'))}\n"
         f"Base Price: NGN {data.get('base_price'):,.2f}\n"
         f"Buyer Price: NGN {data.get('buyer_price'):,.2f}\n\n"
         "Create this listing?"
