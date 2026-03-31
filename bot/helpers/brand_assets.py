@@ -40,10 +40,32 @@ def get_empty_state(asset_name: str) -> Optional[FSInputFile]:
 def get_category_hero(category_name: str, accessory_subcategory_name: str | None = None) -> Optional[FSInputFile]:
     category_name = category_name.upper()
     if category_name == "JEWELRY":
+        categories_root = BRAND_ROOT / "categories"
         if accessory_subcategory_name:
             token = accessory_subcategory_name.lower()
-            return _file_input(BRAND_ROOT / "categories" / f"accessories_{token}.png")
-        return _file_input(BRAND_ROOT / "categories" / "accessories_jewelry.png")
+            accessory_candidates = {
+                "bags": ["accessories_bags.png", "bags.png"],
+                "watches": ["accessories_watches.png", "watches.png"],
+                "jewelry": ["accessories_jewelry.png", "jewelry.png", "jewellery.png", "jewelry.png.png"],
+            }
+            for filename in accessory_candidates.get(token, [f"accessories_{token}.png"]):
+                candidate = _file_input(categories_root / filename)
+                if candidate:
+                    return candidate
+            return None
+
+        for filename in [
+            "accessories_jewelry.png",
+            "jewelry.png",
+            "jewellery.png",
+            "jewelry.png.png",
+            "bags.png",
+            "watches.png",
+        ]:
+            candidate = _file_input(categories_root / filename)
+            if candidate:
+                return candidate
+        return None
 
     mapping = {
         "IPADS": "ipads.png",
