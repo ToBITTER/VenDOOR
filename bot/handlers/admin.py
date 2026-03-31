@@ -34,6 +34,7 @@ class AdminStates(StatesGroup):
     awaiting_delivery_agent_name = State()
     awaiting_delivery_agent_phone = State()
     awaiting_delivery_agent_vehicle = State()
+    awaiting_delivery_agent_telegram_id = State()
 
 
 def _is_admin(telegram_user_id: int) -> bool:
@@ -826,7 +827,7 @@ async def admin_delivery_agent_add(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.awaiting_delivery_agent_name)
     await safe_edit_text(
         callback,
-        "<b>Add Delivery Agent</b>\n\nStep 1/3\nSend the rider full name.",
+        "<b>Add Delivery Agent</b>\n\nStep 1/4\nSend the rider full name.",
         parse_mode="HTML",
         reply_markup=_delete_help_keyboard(),
     )
@@ -846,7 +847,7 @@ async def receive_delivery_agent_name(message: Message, state: FSMContext):
 
     await state.update_data(delivery_agent_name=name)
     await state.set_state(AdminStates.awaiting_delivery_agent_phone)
-    await message.reply("Step 2/3\nSend phone number (or type 'none').")
+    await message.reply("Step 2/4\nSend phone number (or type 'none').")
 
 
 @router.message(AdminStates.awaiting_delivery_agent_phone)
@@ -862,11 +863,11 @@ async def receive_delivery_agent_phone(message: Message, state: FSMContext):
 
     await state.update_data(delivery_agent_phone=phone)
     await state.set_state(AdminStates.awaiting_delivery_agent_vehicle)
-    await message.reply("Step 3/3\nSend vehicle type (e.g., Bike) or type 'none'.")
+    await message.reply("Step 3/4\nSend vehicle type (e.g., Bike) or type 'none'.")
 
 
 @router.message(AdminStates.awaiting_delivery_agent_vehicle)
-async def receive_delivery_agent_vehicle(message: Message, state: FSMContext, session: AsyncSession):
+async def receive_delivery_agent_vehicle(message: Message, state: FSMContext):
     if not _is_admin(message.from_user.id):
         await message.reply("You are not authorized to use this command.")
         await state.clear()
@@ -878,19 +879,43 @@ async def receive_delivery_agent_vehicle(message: Message, state: FSMContext, se
 
     data = await state.get_data()
     name = (data.get("delivery_agent_name") or "").strip()
-    phone = (data.get("delivery_agent_phone") or "").strip()
     if not name:
         await state.clear()
         await message.reply("Session expired. Open /admin_tools and try again.")
         return
 
-    raw_key = f"vdl_{secrets.token_urlsafe(24)}"
-    key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    await state.update_data(delivery_agent_vehicle=vehicle)
+    await state.set_state(AdminStates.awaiting_delivery_agent_telegram_id)
+    await message.reply("Step 4/4\nSend the agent's Telegram user ID (numeric, e.g., 123456789).")
+
+
+@router.message(AdminStates.awaiting_delivery_agent_telegram_id)
+async def receive_delivery_agent_telegram_id(message: Message, state: FSMContext, session: AsyncSession):
+    if not _is_admin(message.from_user.id):
+        await message.reply("You are not authorized to use this command.")
+        await state.clear()
+        return
+
+    telegram_id = (message.text or "").strip()
+    if not telegram_id.isdigit():
+        await message.reply("Please send a valid Telegram user ID (numeric only).")
+        return
+
+    data = await state.get_data()
+    name = (data.get("delivery_agent_name") or "").strip()
+    phone = (data.get("delivery_agent_phone") or "").strip()
+    vehicle = (data.get("delivery_agent_vehicle") or "").strip()
+
+    if not name:
+        await state.clear()
+        await message.reply("Session expired. Open /admin_tools and try again.")
+        return
+
     agent = DeliveryAgent(
         name=name,
         phone=phone or None,
         vehicle_type=vehicle or None,
-        api_key_hash=key_hash,
+        telegram_id=telegram_id,
         is_active=True,
     )
     session.add(agent)
@@ -905,8 +930,8 @@ async def receive_delivery_agent_vehicle(message: Message, state: FSMContext, se
             f"<b>Name:</b> {agent.name}\n"
             f"<b>Phone:</b> {agent.phone or 'N/A'}\n"
             f"<b>Vehicle:</b> {agent.vehicle_type or 'N/A'}\n"
-            f"<b>API Key:</b> <code>{raw_key}</code>\n\n"
-            "Store this key securely. It is shown only once."
+            f"<b>Telegram ID:</b> <code>{telegram_id}</code>\n\n"
+            "Agent registered via Telegram authentication."
         ),
         parse_mode="HTML",
         reply_markup=_admin_tools_keyboard(),
@@ -1032,6 +1057,14 @@ async def admin_delivery_set_agent(callback: CallbackQuery, session: AsyncSessio
                     f"Phone: {agent.phone or 'N/A'}"
                 ),
             )
+        except Exception:
+            pass
+
+    # Notify agent via Telegram with pickup details
+    if agent.telegram_id:
+        from services.delivery_notifications import notify_agent_delivery_assigned
+        try:
+            await notify_agent_delivery_assigned(delivery.id, session)
         except Exception:
             pass
 

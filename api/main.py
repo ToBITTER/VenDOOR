@@ -1104,6 +1104,14 @@ async def assign_delivery_agent(
         except Exception:
             logger.exception("Failed to notify buyer for assigned delivery %s", delivery.id)
 
+    # Notify agent via Telegram with pickup details
+    if agent.telegram_id:
+        from services.delivery_notifications import notify_agent_delivery_assigned
+        try:
+            await notify_agent_delivery_assigned(delivery.id, session)
+        except Exception:
+            logger.exception("Failed to notify agent for assigned delivery %s", delivery.id)
+
     return {"ok": True, "delivery": _serialize_delivery(delivery)}
 
 

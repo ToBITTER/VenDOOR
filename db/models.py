@@ -283,6 +283,9 @@ class Order(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    delivery_orders: Mapped[list["DeliveryOrder"]] = relationship(
+        "DeliveryOrder", back_populates="order", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_orders_buyer_id_status", "buyer_id", "status"),
@@ -379,6 +382,25 @@ class DeliveryAgent(Base):
     deliveries: Mapped[list["Delivery"]] = relationship("Delivery", back_populates="agent")
 
 
+class DeliveryOrder(Base):
+    """Join table linking multiple orders to a single delivery job (multi-seller support)."""
+    __tablename__ = "delivery_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    delivery_id: Mapped[int] = mapped_column(ForeignKey("deliveries.id"), nullable=False, index=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, default=0, nullable=False, index=True)  # Order in pickup sequence
+    picked_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)  # When this order was picked up
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    delivery: Mapped["Delivery"] = relationship("Delivery", back_populates="delivery_orders")
+    order: Mapped["Order"] = relationship("Order", back_populates="delivery_orders")
+
+    __table_args__ = (
+        UniqueConstraint("delivery_id", "order_id", name="uq_delivery_order"),
+    )
+
+
 class Delivery(Base):
     """Delivery record linked to a paid order."""
     __tablename__ = "deliveries"
@@ -406,6 +428,9 @@ class Delivery(Base):
 
     order: Mapped["Order"] = relationship("Order", back_populates="delivery")
     agent: Mapped[Optional["DeliveryAgent"]] = relationship("DeliveryAgent", back_populates="deliveries")
+    delivery_orders: Mapped[list["DeliveryOrder"]] = relationship(
+        "DeliveryOrder", back_populates="delivery", cascade="all, delete-orphan"
+    )
     events: Mapped[list["DeliveryEvent"]] = relationship(
         "DeliveryEvent", back_populates="delivery", cascade="all, delete-orphan"
     )

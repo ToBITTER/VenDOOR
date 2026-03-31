@@ -11,6 +11,7 @@ from bot.middlewares.db import DatabaseMiddleware
 from bot.handlers import start
 from bot.handlers.seller import register as seller_register
 from bot.handlers.seller import listings as seller_listings
+from bot.handlers.seller import delivery_agent as seller_delivery_agent
 from bot.handlers.buyer import catalog as buyer_catalog
 from bot.handlers.buyer import cart as buyer_cart
 from bot.handlers.buyer import checkout as buyer_checkout
@@ -37,6 +38,7 @@ def create_dispatcher() -> Dispatcher:
     dispatcher.include_router(start.router)
     dispatcher.include_router(seller_register.router)
     dispatcher.include_router(seller_listings.router)
+    dispatcher.include_router(seller_delivery_agent.router)
     dispatcher.include_router(buyer_catalog.router)
     dispatcher.include_router(buyer_cart.router)
     dispatcher.include_router(buyer_checkout.router)
