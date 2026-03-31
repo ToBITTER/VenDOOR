@@ -30,7 +30,7 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
 
     result = await session.execute(
         select(Order)
-        .options(selectinload(Order.listing))
+        .options(selectinload(Order.listing), selectinload(Order.delivery))
         .where(Order.buyer_id == user.id)
         .order_by(Order.created_at.desc())
     )
@@ -67,8 +67,10 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
         text += (
             f"<b>Order #{order.id}</b>\n"
             f"Product: {order.listing.title}\n"
+            f"Qty: {order.quantity}\n"
             f"Amount: NGN {order.amount:,.2f}\n"
             f"Status: {status_emoji}\n"
+            f"Delivery: {order.delivery.status.value if order.delivery else 'PENDING_ASSIGNMENT'}\n"
             f"Date: {order.created_at.strftime('%d/%m/%Y')}\n\n"
         )
 
@@ -99,6 +101,7 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
         .options(
             selectinload(Order.listing),
             selectinload(Order.seller).selectinload(SellerProfile.user),
+            selectinload(Order.delivery),
         )
         .where(Order.id == order_id)
     )
@@ -118,6 +121,7 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
         f"<b>Order #{order.id}</b>\n\n"
         f"<b>Product:</b> {order.listing.title}\n"
         f"<b>Seller:</b> {order.seller.user.first_name}\n"
+        f"<b>Quantity:</b> {order.quantity}\n"
         f"<b>Amount:</b> NGN {order.amount:,.2f}\n"
         f"<b>Status:</b> {order.status.value}\n\n"
         f"<b>Delivery Address:</b>\n{order.buyer_address}\n"
@@ -125,6 +129,13 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
 
     if order.buyer_delivery_details:
         text += f"\n<b>Special Instructions:</b>\n{order.buyer_delivery_details}\n"
+
+    if order.delivery:
+        text += f"\n<b>Delivery Status:</b> {order.delivery.status.value}\n"
+    if order.delivery_eta_at:
+        text += f"<b>ETA:</b> {order.delivery_eta_at.strftime('%d/%m/%Y %H:%M')}\n"
+    if order.delivery_confirm_deadline_at and order.status == OrderStatus.PAID:
+        text += f"<b>Confirm Before:</b> {order.delivery_confirm_deadline_at.strftime('%d/%m/%Y %H:%M')}\n"
 
     text += f"\n<b>Date:</b> {order.created_at.strftime('%d/%m/%Y %H:%M')}"
 
@@ -156,6 +167,13 @@ async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
         await safe_answer_callback(
             callback,
             text=f"Cannot confirm receipt. Order status is {order.status.value}",
+            show_alert=True,
+        )
+        return
+    if not order.delivered_at:
+        await safe_answer_callback(
+            callback,
+            text="Order has not been marked delivered yet.",
             show_alert=True,
         )
         return

@@ -3,14 +3,14 @@ Korapay webhook handler for payment status callbacks.
 Processes payment confirmations and updates order statuses in the database.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 from aiogram import Bot
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from db.models import Listing, Order, OrderStatus, SellerProfile
+from db.models import Delivery, DeliveryEvent, DeliveryEventType, DeliveryStatus, Listing, Order, OrderStatus, SellerProfile
 from services.korapay import get_korapay_client
 from core.config import get_settings
 
@@ -120,7 +120,7 @@ async def _handle_payment_success(
             select(Listing).where(Listing.id == order.listing_id).with_for_update()
         )
         listing = listing_result.scalars().first()
-        if not listing or not listing.available or listing.quantity <= 0:
+        if not listing or not listing.available or listing.quantity < order.quantity:
             order.status = OrderStatus.CANCELLED
             await session.commit()
             return {
@@ -132,16 +132,24 @@ async def _handle_payment_success(
         # Update order status
         order.status = OrderStatus.PAID
         order.paid_at = datetime.utcnow()
-        listing.quantity -= 1
+        listing.quantity -= order.quantity
         listing.available = listing.quantity > 0
-        
-        # Schedule automatic escrow release
-        # (Celery task triggers after 48 hours)
-        from core.config import get_settings
-        settings = get_settings()
-        order.auto_release_scheduled_at = datetime.utcnow() + timedelta(
-            hours=settings.escrow_release_hours
-        )
+
+        if not order.delivery:
+            delivery = Delivery(
+                order_id=order.id,
+                status=DeliveryStatus.PENDING_ASSIGNMENT,
+            )
+            session.add(delivery)
+            await session.flush()
+            session.add(
+                DeliveryEvent(
+                    delivery_id=delivery.id,
+                    event_type=DeliveryEventType.ASSIGNED,
+                    actor="SYSTEM",
+                    note="Order paid and ready for delivery assignment",
+                )
+            )
         
         await session.commit()
 
@@ -158,7 +166,7 @@ async def _handle_payment_success(
                     text=(
                         f"Payment confirmed for order #{order.id}.\n\n"
                         f"Seller contact: {seller_contact}\n"
-                        "Please proceed to arrange delivery."
+                        "Your delivery will be assigned shortly."
                     ),
                 )
             except Exception:
@@ -172,7 +180,7 @@ async def _handle_payment_success(
                     text=(
                         f"You have a new paid order #{order.id}.\n\n"
                         f"Buyer contact: {buyer_contact}\n"
-                        "Please prepare the item for delivery."
+                        f"Please prepare {order.quantity} unit(s) for delivery."
                     ),
                 )
             except Exception:

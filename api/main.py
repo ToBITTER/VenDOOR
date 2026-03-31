@@ -4,9 +4,12 @@ Handles webhooks, API endpoints for payment callbacks, and administrative operat
 """
 
 import asyncio
+import hashlib
 import logging
+import secrets
 import time
 import uuid
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
@@ -43,6 +46,34 @@ class VendorPrivilegeRequest(BaseModel):
     priority_score: int | None = Field(default=None, ge=0, le=100)
 
 
+class DeliveryAgentCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=255)
+    phone: str | None = Field(default=None, max_length=50)
+    vehicle_type: str | None = Field(default=None, max_length=100)
+
+
+class DeliveryAgentUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=255)
+    phone: str | None = Field(default=None, max_length=50)
+    vehicle_type: str | None = Field(default=None, max_length=100)
+    is_active: bool | None = None
+
+
+class DeliveryAssignmentRequest(BaseModel):
+    agent_id: int
+    note: str | None = Field(default=None, max_length=500)
+
+
+class DeliveryStatusUpdateRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
+
+
+class DeliveryLocationUpdateRequest(BaseModel):
+    latitude: float = Field(ge=-90.0, le=90.0)
+    longitude: float = Field(ge=-180.0, le=180.0)
+    note: str | None = Field(default=None, max_length=255)
+
+
 def require_admin(x_admin_key: str | None = Header(default=None, alias="X-Admin-Key")) -> None:
     """
     Lightweight admin gate for operational endpoints.
@@ -57,6 +88,25 @@ def require_admin(x_admin_key: str | None = Header(default=None, alias="X-Admin-
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid admin credentials",
         )
+
+
+async def require_delivery_agent(
+    x_delivery_key: str | None = Header(default=None, alias="X-Delivery-Key"),
+    session: AsyncSession = Depends(get_session),
+):
+    if not x_delivery_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing delivery key")
+
+    from db.models import DeliveryAgent
+
+    api_key_hash = hashlib.sha256(x_delivery_key.encode("utf-8")).hexdigest()
+    result = await session.execute(
+        select(DeliveryAgent).where(DeliveryAgent.api_key_hash == api_key_hash)
+    )
+    agent = result.scalars().first()
+    if not agent or not agent.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid delivery credentials")
+    return agent
 
 
 async def _configure_bot(bot: Bot) -> None:
@@ -245,6 +295,7 @@ async def get_order_status(order_id: int, session: AsyncSession = Depends(get_se
     return {
         "order_id": order.id,
         "status": order.status.value,
+        "quantity": order.quantity,
         "amount": str(order.amount),
         "created_at": order.created_at.isoformat(),
     }
@@ -489,6 +540,46 @@ async def _send_message_with_retry(bot: Bot, chat_id: int, text: str) -> tuple[b
             return False, str(exc)
 
 
+def _serialize_delivery(delivery, include_order: bool = True) -> dict:
+    payload = {
+        "delivery_id": delivery.id,
+        "order_id": delivery.order_id,
+        "status": delivery.status.value,
+        "agent_id": delivery.agent_id,
+        "assigned_at": delivery.assigned_at.isoformat() if delivery.assigned_at else None,
+        "picked_up_at": delivery.picked_up_at.isoformat() if delivery.picked_up_at else None,
+        "in_transit_at": delivery.in_transit_at.isoformat() if delivery.in_transit_at else None,
+        "delivered_at": delivery.delivered_at.isoformat() if delivery.delivered_at else None,
+        "current_latitude": float(delivery.current_latitude) if delivery.current_latitude is not None else None,
+        "current_longitude": float(delivery.current_longitude) if delivery.current_longitude is not None else None,
+        "current_location_note": delivery.current_location_note,
+        "created_at": delivery.created_at.isoformat(),
+        "updated_at": delivery.updated_at.isoformat(),
+    }
+    if include_order and delivery.order:
+        payload["order"] = {
+            "buyer_id": delivery.order.buyer_id,
+            "seller_id": delivery.order.seller_id,
+            "amount": str(delivery.order.amount),
+            "order_status": delivery.order.status.value,
+            "delivery_eta_at": (
+                delivery.order.delivery_eta_at.isoformat() if delivery.order.delivery_eta_at else None
+            ),
+            "delivery_confirm_deadline_at": (
+                delivery.order.delivery_confirm_deadline_at.isoformat()
+                if delivery.order.delivery_confirm_deadline_at
+                else None
+            ),
+        }
+    return payload
+
+
+def _generate_delivery_api_key() -> tuple[str, str]:
+    raw_key = f"vdl_{secrets.token_urlsafe(32)}"
+    key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    return raw_key, key_hash
+
+
 @app.post("/admin/broadcast")
 async def broadcast_message(
     payload: BroadcastRequest,
@@ -590,6 +681,7 @@ async def list_all_transactions(
             joinedload(Order.buyer),
             joinedload(Order.seller).joinedload(SellerProfile.user),
             joinedload(Order.listing),
+            joinedload(Order.delivery),
         )
         .order_by(Order.created_at.desc())
         .offset(offset)
@@ -605,6 +697,7 @@ async def list_all_transactions(
             {
                 "order_id": order.id,
                 "status": order.status.value,
+                "quantity": order.quantity,
                 "amount": str(order.amount),
                 "transaction_ref": order.transaction_ref,
                 "buyer": {
@@ -626,6 +719,13 @@ async def list_all_transactions(
                     "title": order.listing.title if order.listing else None,
                 },
                 "buyer_address": order.buyer_address,
+                "delivery_eta_at": order.delivery_eta_at.isoformat() if order.delivery_eta_at else None,
+                "delivered_at": order.delivered_at.isoformat() if order.delivered_at else None,
+                "delivery_confirm_deadline_at": (
+                    order.delivery_confirm_deadline_at.isoformat()
+                    if order.delivery_confirm_deadline_at
+                    else None
+                ),
                 "created_at": order.created_at.isoformat(),
                 "updated_at": order.updated_at.isoformat(),
             }
@@ -858,6 +958,331 @@ async def reject_seller_verification(
         "verified": seller.verified,
         "reason": reason,
     }
+
+
+@app.post("/admin/delivery-agents")
+async def create_delivery_agent(
+    payload: DeliveryAgentCreateRequest,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    from db.models import DeliveryAgent
+
+    raw_key, key_hash = _generate_delivery_api_key()
+    agent = DeliveryAgent(
+        name=payload.name.strip(),
+        phone=payload.phone.strip() if payload.phone else None,
+        vehicle_type=payload.vehicle_type.strip() if payload.vehicle_type else None,
+        api_key_hash=key_hash,
+        is_active=True,
+    )
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+    return {
+        "ok": True,
+        "agent": {
+            "id": agent.id,
+            "name": agent.name,
+            "phone": agent.phone,
+            "vehicle_type": agent.vehicle_type,
+            "is_active": agent.is_active,
+            "created_at": agent.created_at.isoformat(),
+        },
+        "api_key": raw_key,
+    }
+
+
+@app.get("/admin/delivery-agents")
+async def list_delivery_agents(
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    from db.models import DeliveryAgent
+
+    result = await session.execute(select(DeliveryAgent).order_by(DeliveryAgent.created_at.desc()))
+    agents = result.scalars().all()
+    return {
+        "count": len(agents),
+        "agents": [
+            {
+                "id": agent.id,
+                "name": agent.name,
+                "phone": agent.phone,
+                "vehicle_type": agent.vehicle_type,
+                "is_active": agent.is_active,
+                "created_at": agent.created_at.isoformat(),
+                "updated_at": agent.updated_at.isoformat(),
+            }
+            for agent in agents
+        ],
+    }
+
+
+@app.patch("/admin/delivery-agents/{agent_id}")
+async def update_delivery_agent(
+    agent_id: int,
+    payload: DeliveryAgentUpdateRequest,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    from db.models import DeliveryAgent
+
+    agent = await session.get(DeliveryAgent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Delivery agent not found")
+
+    if payload.name is not None:
+        agent.name = payload.name.strip()
+    if payload.phone is not None:
+        agent.phone = payload.phone.strip() or None
+    if payload.vehicle_type is not None:
+        agent.vehicle_type = payload.vehicle_type.strip() or None
+    if payload.is_active is not None:
+        agent.is_active = payload.is_active
+
+    await session.commit()
+    return {
+        "ok": True,
+        "agent": {
+            "id": agent.id,
+            "name": agent.name,
+            "phone": agent.phone,
+            "vehicle_type": agent.vehicle_type,
+            "is_active": agent.is_active,
+            "updated_at": agent.updated_at.isoformat(),
+        },
+    }
+
+
+@app.post("/admin/deliveries/{delivery_id}/assign-agent")
+async def assign_delivery_agent(
+    delivery_id: int,
+    payload: DeliveryAssignmentRequest,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    from db.models import Delivery, DeliveryAgent, DeliveryEvent, DeliveryEventType, DeliveryStatus, Order, User
+
+    delivery_result = await session.execute(
+        select(Delivery)
+        .options(joinedload(Delivery.order).joinedload(Order.buyer))
+        .where(Delivery.id == delivery_id)
+    )
+    delivery = delivery_result.scalars().first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    agent = await session.get(DeliveryAgent, payload.agent_id)
+    if not agent or not agent.is_active:
+        raise HTTPException(status_code=400, detail="Delivery agent unavailable")
+
+    delivery.agent_id = agent.id
+    delivery.status = DeliveryStatus.ASSIGNED
+    delivery.assigned_at = datetime.utcnow()
+    session.add(
+        DeliveryEvent(
+            delivery_id=delivery.id,
+            event_type=DeliveryEventType.ASSIGNED,
+            actor="ADMIN",
+            note=payload.note or f"Assigned to {agent.name}",
+        )
+    )
+    await session.commit()
+
+    buyer = delivery.order.buyer if delivery.order else None
+    if buyer and buyer.telegram_id:
+        try:
+            await app.state.bot.send_message(
+                chat_id=int(buyer.telegram_id),
+                text=(
+                    f"Delivery assigned for order #{delivery.order_id}.\n"
+                    f"Rider: {agent.name}\n"
+                    f"Phone: {agent.phone or 'N/A'}"
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to notify buyer for assigned delivery %s", delivery.id)
+
+    return {"ok": True, "delivery": _serialize_delivery(delivery)}
+
+
+@app.get("/admin/deliveries")
+async def admin_list_deliveries(
+    status_filter: str | None = Query(default=None, alias="status"),
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    from db.models import Delivery, DeliveryStatus, Order
+
+    query = select(Delivery).options(joinedload(Delivery.order).joinedload(Order.buyer)).order_by(
+        Delivery.created_at.desc()
+    )
+    if status_filter:
+        try:
+            status_value = DeliveryStatus[status_filter.upper()]
+        except KeyError:
+            raise HTTPException(status_code=400, detail="Invalid delivery status filter")
+        query = query.where(Delivery.status == status_value)
+    result = await session.execute(query)
+    deliveries = result.scalars().all()
+    return {"count": len(deliveries), "deliveries": [_serialize_delivery(d) for d in deliveries]}
+
+
+@app.get("/delivery-agent/jobs")
+async def delivery_agent_jobs(
+    agent=Depends(require_delivery_agent),
+    session: AsyncSession = Depends(get_session),
+):
+    from db.models import Delivery, DeliveryStatus, Order
+
+    result = await session.execute(
+        select(Delivery)
+        .options(joinedload(Delivery.order).joinedload(Order.buyer))
+        .where(Delivery.agent_id == agent.id)
+        .where(Delivery.status.in_([DeliveryStatus.ASSIGNED, DeliveryStatus.PICKED_UP, DeliveryStatus.IN_TRANSIT]))
+        .order_by(Delivery.updated_at.desc())
+    )
+    deliveries = result.scalars().all()
+    return {"count": len(deliveries), "jobs": [_serialize_delivery(d) for d in deliveries]}
+
+
+@app.post("/delivery-agent/jobs/{delivery_id}/pickup")
+async def delivery_pickup(
+    delivery_id: int,
+    payload: DeliveryStatusUpdateRequest,
+    agent=Depends(require_delivery_agent),
+    session: AsyncSession = Depends(get_session),
+):
+    from db.models import Delivery, DeliveryEvent, DeliveryEventType, DeliveryStatus
+
+    delivery = await session.get(Delivery, delivery_id)
+    if not delivery or delivery.agent_id != agent.id:
+        raise HTTPException(status_code=404, detail="Delivery job not found")
+
+    delivery.status = DeliveryStatus.PICKED_UP
+    delivery.picked_up_at = datetime.utcnow()
+    session.add(
+        DeliveryEvent(
+            delivery_id=delivery.id,
+            event_type=DeliveryEventType.PICKED_UP,
+            actor="AGENT",
+            note=payload.note,
+        )
+    )
+    await session.commit()
+    return {"ok": True, "delivery": _serialize_delivery(delivery, include_order=False)}
+
+
+@app.post("/delivery-agent/jobs/{delivery_id}/in-transit")
+async def delivery_in_transit(
+    delivery_id: int,
+    payload: DeliveryStatusUpdateRequest,
+    agent=Depends(require_delivery_agent),
+    session: AsyncSession = Depends(get_session),
+):
+    from db.models import Delivery, DeliveryEvent, DeliveryEventType, DeliveryStatus
+
+    delivery = await session.get(Delivery, delivery_id)
+    if not delivery or delivery.agent_id != agent.id:
+        raise HTTPException(status_code=404, detail="Delivery job not found")
+
+    delivery.status = DeliveryStatus.IN_TRANSIT
+    delivery.in_transit_at = datetime.utcnow()
+    session.add(
+        DeliveryEvent(
+            delivery_id=delivery.id,
+            event_type=DeliveryEventType.IN_TRANSIT,
+            actor="AGENT",
+            note=payload.note,
+        )
+    )
+    await session.commit()
+    return {"ok": True, "delivery": _serialize_delivery(delivery, include_order=False)}
+
+
+@app.post("/delivery-agent/jobs/{delivery_id}/location")
+async def delivery_location_update(
+    delivery_id: int,
+    payload: DeliveryLocationUpdateRequest,
+    agent=Depends(require_delivery_agent),
+    session: AsyncSession = Depends(get_session),
+):
+    from db.models import Delivery, DeliveryEvent, DeliveryEventType
+
+    delivery = await session.get(Delivery, delivery_id)
+    if not delivery or delivery.agent_id != agent.id:
+        raise HTTPException(status_code=404, detail="Delivery job not found")
+
+    delivery.current_latitude = payload.latitude
+    delivery.current_longitude = payload.longitude
+    delivery.current_location_note = payload.note
+    session.add(
+        DeliveryEvent(
+            delivery_id=delivery.id,
+            event_type=DeliveryEventType.LOCATION_UPDATE,
+            actor="AGENT",
+            note=payload.note,
+            latitude=payload.latitude,
+            longitude=payload.longitude,
+        )
+    )
+    await session.commit()
+    return {"ok": True, "delivery": _serialize_delivery(delivery, include_order=False)}
+
+
+@app.post("/delivery-agent/jobs/{delivery_id}/delivered")
+async def delivery_delivered(
+    delivery_id: int,
+    payload: DeliveryStatusUpdateRequest,
+    agent=Depends(require_delivery_agent),
+    session: AsyncSession = Depends(get_session),
+):
+    from db.models import Delivery, DeliveryEvent, DeliveryEventType, DeliveryStatus, Order, User
+
+    delivery_result = await session.execute(
+        select(Delivery)
+        .options(joinedload(Delivery.order).joinedload(Order.buyer))
+        .where(Delivery.id == delivery_id)
+    )
+    delivery = delivery_result.scalars().first()
+    if not delivery or delivery.agent_id != agent.id:
+        raise HTTPException(status_code=404, detail="Delivery job not found")
+
+    now = datetime.utcnow()
+    confirmation_deadline = now + timedelta(hours=4)
+
+    delivery.status = DeliveryStatus.DELIVERED
+    delivery.delivered_at = now
+    if delivery.order:
+        delivery.order.delivered_at = now
+        delivery.order.delivery_confirm_deadline_at = confirmation_deadline
+        delivery.order.auto_release_scheduled_at = confirmation_deadline
+
+    session.add(
+        DeliveryEvent(
+            delivery_id=delivery.id,
+            event_type=DeliveryEventType.DELIVERED,
+            actor="AGENT",
+            note=payload.note,
+        )
+    )
+    await session.commit()
+
+    buyer = delivery.order.buyer if delivery.order else None
+    if buyer and buyer.telegram_id:
+        try:
+            await app.state.bot.send_message(
+                chat_id=int(buyer.telegram_id),
+                text=(
+                    f"Order #{delivery.order_id} has been marked delivered.\n\n"
+                    "Please confirm receipt within 4 hours to release payment."
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to notify buyer for delivered order %s", delivery.order_id)
+
+    return {"ok": True, "delivery": _serialize_delivery(delivery)}
 
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
 """
-Celery task for automatically releasing escrow funds after 48 hours.
-Triggered by Korapay webhook when payment completes.
+Celery task for automatically releasing escrow funds when scheduled deadline is reached.
 """
 
 import asyncio
@@ -25,10 +24,8 @@ def _run_async(coro):
 @shared_task(bind=True)
 def release_escrow_auto(self, order_id: int) -> dict:
     """
-    Automatically release escrow funds to seller after 48 hours if not disputed.
-    
-    This task is scheduled by the Korapay webhook when payment completes.
-    It should only run if no dispute has been raised.
+    Automatically release escrow funds to seller when the order reaches release deadline
+    (for example, delivered + confirmation grace window) and no dispute exists.
     
     Args:
         order_id: Order ID to release escrow for

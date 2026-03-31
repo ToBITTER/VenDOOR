@@ -59,6 +59,24 @@ class DisputeStatus(str, PyEnum):
     CLOSED = "CLOSED"
 
 
+class DeliveryStatus(str, PyEnum):
+    """Delivery lifecycle status enum."""
+    PENDING_ASSIGNMENT = "PENDING_ASSIGNMENT"
+    ASSIGNED = "ASSIGNED"
+    PICKED_UP = "PICKED_UP"
+    IN_TRANSIT = "IN_TRANSIT"
+    DELIVERED = "DELIVERED"
+
+
+class DeliveryEventType(str, PyEnum):
+    """Delivery timeline event enum."""
+    ASSIGNED = "ASSIGNED"
+    PICKED_UP = "PICKED_UP"
+    IN_TRANSIT = "IN_TRANSIT"
+    LOCATION_UPDATE = "LOCATION_UPDATE"
+    DELIVERED = "DELIVERED"
+
+
 class User(Base):
     """
     User model - represents both buyers and sellers.
@@ -94,6 +112,11 @@ class User(Base):
         "Complaint",
         back_populates="complainant",
         cascade="all, delete-orphan"
+    )
+    cart_items: Mapped[list["CartItem"]] = relationship(
+        "CartItem",
+        back_populates="buyer",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:
@@ -184,6 +207,11 @@ class Listing(Base):
         back_populates="listing",
         cascade="all, delete-orphan"
     )
+    cart_items: Mapped[list["CartItem"]] = relationship(
+        "CartItem",
+        back_populates="listing",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_listings_seller_id_created_at", "seller_id", "created_at"),
@@ -206,6 +234,7 @@ class Order(Base):
     listing_id: Mapped[int] = mapped_column(ForeignKey("listings.id"), nullable=False, index=True)
     
     # Transaction details
+    quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)  # buyer_price at purchase time
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.PENDING, nullable=False, index=True)
     
@@ -216,6 +245,9 @@ class Order(Base):
     # Delivery info
     buyer_address: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     buyer_delivery_details: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    delivery_eta_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_confirm_deadline_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     
     # Escrow & Release
     escrow_released_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -244,6 +276,12 @@ class Order(Base):
         back_populates="order",
         uselist=False,
         cascade="all, delete-orphan"
+    )
+    delivery: Mapped[Optional["Delivery"]] = relationship(
+        "Delivery",
+        back_populates="order",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
 
     __table_args__ = (
@@ -298,3 +336,99 @@ class Complaint(Base):
 
     def __repr__(self) -> str:
         return f"<Complaint {self.id} - {self.status}>"
+
+
+class CartItem(Base):
+    """Shopping cart item belonging to a buyer."""
+    __tablename__ = "cart_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    buyer_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    listing_id: Mapped[int] = mapped_column(ForeignKey("listings.id"), nullable=False, index=True)
+    quantity: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    buyer: Mapped["User"] = relationship("User", back_populates="cart_items")
+    listing: Mapped["Listing"] = relationship("Listing", back_populates="cart_items")
+
+    __table_args__ = (
+        UniqueConstraint("buyer_id", "listing_id", name="uq_cart_item_buyer_listing"),
+        Index("ix_cart_items_buyer_id_created_at", "buyer_id", "created_at"),
+    )
+
+
+class DeliveryAgent(Base):
+    """Delivery rider/agent account managed by admin."""
+    __tablename__ = "delivery_agents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    vehicle_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    api_key_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    deliveries: Mapped[list["Delivery"]] = relationship("Delivery", back_populates="agent")
+
+
+class Delivery(Base):
+    """Delivery record linked to a paid order."""
+    __tablename__ = "deliveries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), nullable=False, unique=True, index=True)
+    agent_id: Mapped[Optional[int]] = mapped_column(ForeignKey("delivery_agents.id"), nullable=True, index=True)
+    status: Mapped[DeliveryStatus] = mapped_column(
+        Enum(DeliveryStatus),
+        default=DeliveryStatus.PENDING_ASSIGNMENT,
+        nullable=False,
+        index=True,
+    )
+    current_latitude: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 7), nullable=True)
+    current_longitude: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 7), nullable=True)
+    current_location_note: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    picked_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    in_transit_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    order: Mapped["Order"] = relationship("Order", back_populates="delivery")
+    agent: Mapped[Optional["DeliveryAgent"]] = relationship("DeliveryAgent", back_populates="deliveries")
+    events: Mapped[list["DeliveryEvent"]] = relationship(
+        "DeliveryEvent", back_populates="delivery", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_deliveries_status_created_at", "status", "created_at"),
+    )
+
+
+class DeliveryEvent(Base):
+    """Immutable timeline entries for delivery tracking."""
+    __tablename__ = "delivery_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    delivery_id: Mapped[int] = mapped_column(ForeignKey("deliveries.id"), nullable=False, index=True)
+    event_type: Mapped[DeliveryEventType] = mapped_column(Enum(DeliveryEventType), nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(32), nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    latitude: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 7), nullable=True)
+    longitude: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 7), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    delivery: Mapped["Delivery"] = relationship("Delivery", back_populates="events")
+
+    __table_args__ = (
+        Index("ix_delivery_events_delivery_id_created_at", "delivery_id", "created_at"),
+    )

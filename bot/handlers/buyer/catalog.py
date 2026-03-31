@@ -6,7 +6,6 @@ import time
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramRetryAfter
-from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -104,7 +103,7 @@ def _build_category_page_keyboard(
 def _build_listing_card_keyboard(listing: Listing) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Buy Now", callback_data=f"buy_listing_{listing.id}")],
+            [InlineKeyboardButton(text="Add to Cart", callback_data=f"add_to_cart_{listing.id}")],
             [InlineKeyboardButton(text="Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
         ]
     )
@@ -325,28 +324,6 @@ async def browse_accessories_subcategory(callback: CallbackQuery, session: Async
         page=page,
         accessory_subcategory=accessory_subcategory,
     )
-
-
-@router.callback_query(F.data.startswith("buy_listing_"))
-async def initiate_buy(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
-    listing_id = int(callback.data.replace("buy_listing_", ""))
-
-    result = await session.execute(select(Listing).where(Listing.id == listing_id))
-    listing = result.scalars().first()
-
-    if not listing:
-        await safe_answer_callback(callback, text="Listing not found", show_alert=True)
-        return
-    if not listing.available or listing.quantity <= 0:
-        await safe_answer_callback(callback, text="This item is out of stock", show_alert=True)
-        return
-
-    await safe_answer_callback(callback)
-    await state.update_data(listing_id=listing_id)
-
-    from bot.handlers.buyer import checkout
-
-    await checkout.start_checkout(callback, state, session)
 
 
 @router.callback_query(F.data.startswith("seller_profile_"))
