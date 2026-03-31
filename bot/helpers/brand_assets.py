@@ -22,6 +22,13 @@ def get_welcome_banner() -> Optional[FSInputFile]:
     return _file_input(BRAND_ROOT / "welcome_banner.png")
 
 
+def get_main_menu_banner() -> Optional[FSInputFile]:
+    banner = _file_input(BRAND_ROOT / "main_menu_banner.png")
+    if banner:
+        return banner
+    return get_welcome_banner()
+
+
 def get_help_banner() -> Optional[FSInputFile]:
     return _file_input(BRAND_ROOT / "help_banner.png")
 
