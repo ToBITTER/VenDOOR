@@ -366,9 +366,10 @@ class DeliveryAgent(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    telegram_id: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True, index=True)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     vehicle_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    api_key_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    api_key_hash: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
