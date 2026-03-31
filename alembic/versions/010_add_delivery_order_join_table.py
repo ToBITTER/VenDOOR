@@ -1,7 +1,7 @@
 """Add delivery_orders join table for multi-seller deliveries.
 
-Revision ID: 010
-Revises: 009
+Revision ID: add_delivery_order_join_table
+Revises: delivery_agent_telegram_auth
 Create Date: 2026-03-31
 
 This migration adds a many-to-many join table to link multiple orders
@@ -12,6 +12,12 @@ Existing 1:1 delivery-order relationships remain functional via this table.
 
 from alembic import op
 import sqlalchemy as sa
+
+# revision identifiers, used by Alembic.
+revision = "add_delivery_order_join_table"
+down_revision = "delivery_agent_telegram_auth"
+branch_labels = None
+depends_on = None
 
 
 def upgrade() -> None:
