@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from decimal import Decimal
 
 from db.models import Delivery, DeliveryAgent, Order, DeliveryStatus, DeliveryOrder
-from db.session import get_session
 from services.delivery_notifications import (
     notify_buyer_delivery_status_update,
     update_agent_job_message,
@@ -212,8 +211,8 @@ async def receive_pickup_photo(message: Message, state: FSMContext, session: Asy
 
         await session.commit()
 
-    # Notify seller that their order was picked up
-    await notify_buyer_delivery_status_update(current_order_id, "PICKED_UP", None)
+    # Notify buyer that their order was picked up
+    await notify_buyer_delivery_status_update(current_order_id, "PICKED_UP", None, session)
 
     # Move to next seller
     next_index = order_index + 1
@@ -307,9 +306,9 @@ async def delivery_in_transit(callback: CallbackQuery, session: AsyncSession):
     await update_delivery_status(delivery_id, DeliveryStatus.IN_TRANSIT, "AGENT", None, session)
     await session.commit()
 
-    # Notify buyer
-    for order in delivery.order:
-        await notify_buyer_delivery_status_update(order.id, DeliveryStatus.IN_TRANSIT, agent)
+    # Notify all buyers (could be multiple orders linked to this delivery)
+    for delivery_order in delivery.delivery_orders:
+        await notify_buyer_delivery_status_update(delivery_order.order.id, DeliveryStatus.IN_TRANSIT, agent, session)
 
     message_text = (
         "🚗 <b>Delivery In Transit</b>\n\n"
@@ -407,9 +406,9 @@ async def delivery_mark_delivered(callback: CallbackQuery, state: FSMContext, se
     await update_delivery_status(delivery_id, DeliveryStatus.DELIVERED, "AGENT", None, session)
     await session.commit()
 
-    # Notify buyer and sellers
-    for order in delivery.order:
-        await notify_buyer_delivery_status_update(order.id, DeliveryStatus.DELIVERED, agent)
+    # Notify buyer
+    if delivery.order:
+        await notify_buyer_delivery_status_update(delivery.order.id, DeliveryStatus.DELIVERED, agent, session)
 
     await callback.message.edit_text(
         "✅ <b>Delivery Completed</b>\n\n"

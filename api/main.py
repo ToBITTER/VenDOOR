@@ -118,6 +118,10 @@ async def _configure_bot(bot: Bot) -> None:
         await set_default_commands(bot)
         await bot.set_webhook(webhook_url, drop_pending_updates=True)
         logger.info("Telegram webhook configured: %s", webhook_url)
+        
+        # Initialize notification service with bot instance
+        from services.delivery_notifications import set_bot_instance
+        set_bot_instance(bot)
     except Exception:
         logger.exception("Failed to configure Telegram webhook/commands at startup")
 

@@ -76,6 +76,10 @@ async def main():
     bot = create_bot()
     dispatcher = create_dispatcher()
     
+    # Initialize bot instance for notification service
+    from services.delivery_notifications import set_bot_instance
+    set_bot_instance(bot)
+    
     # Set startup/shutdown handlers
     dispatcher.startup.register(lambda disp: on_startup(disp, bot))
     dispatcher.shutdown.register(lambda disp: on_shutdown(disp, bot))
