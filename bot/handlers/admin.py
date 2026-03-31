@@ -3,7 +3,9 @@ Admin handlers for seller verification workflows.
 """
 
 import asyncio
+import hashlib
 import re
+import secrets
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramRetryAfter
@@ -18,7 +20,7 @@ from sqlalchemy.orm import joinedload
 
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text
 from core.config import get_settings
-from db.models import Listing, Order, SellerProfile, User
+from db.models import Delivery, DeliveryAgent, DeliveryStatus, Listing, Order, SellerProfile, User
 
 router = Router()
 settings = get_settings()
@@ -29,6 +31,9 @@ class AdminStates(StatesGroup):
     awaiting_privilege_seller_id = State()
     awaiting_privilege_featured = State()
     awaiting_privilege_priority = State()
+    awaiting_delivery_agent_name = State()
+    awaiting_delivery_agent_phone = State()
+    awaiting_delivery_agent_vehicle = State()
 
 
 def _is_admin(telegram_user_id: int) -> bool:
@@ -66,6 +71,10 @@ def _admin_tools_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Vendors", callback_data="admin_vendors")],
             [InlineKeyboardButton(text="Transactions", callback_data="admin_transactions")],
             [InlineKeyboardButton(text="Listings", callback_data="admin_listings")],
+            [InlineKeyboardButton(text="Delivery Agents", callback_data="admin_delivery_agents")],
+            [InlineKeyboardButton(text="Add Delivery Agent", callback_data="admin_delivery_agent_add")],
+            [InlineKeyboardButton(text="Assign Delivery", callback_data="admin_delivery_assign_picker")],
+            [InlineKeyboardButton(text="Track Deliveries", callback_data="admin_delivery_tracking")],
             [InlineKeyboardButton(text="Pending Sellers", callback_data="admin_pending_refresh")],
             [InlineKeyboardButton(text="Vendor Privileges", callback_data="admin_privileges_help")],
             [InlineKeyboardButton(text="Broadcast", callback_data="admin_broadcast_help")],
@@ -324,6 +333,93 @@ async def _render_listings_text(session: AsyncSession, limit: int = 10) -> str:
             f"<b>Seller:</b> {seller_name}\n\n"
         )
     return text
+
+
+async def _render_delivery_agents_text(session: AsyncSession, limit: int = 20) -> str:
+    result = await session.execute(
+        select(DeliveryAgent)
+        .order_by(DeliveryAgent.created_at.desc())
+        .limit(limit)
+    )
+    agents = result.scalars().all()
+    if not agents:
+        return "<b>Delivery Agents</b>\n\nNo delivery agents found."
+
+    text = "<b>Delivery Agents</b>\n\n"
+    for agent in agents:
+        text += (
+            f"<b>Agent #{agent.id}</b>\n"
+            f"Name: {agent.name}\n"
+            f"Phone: {agent.phone or 'N/A'}\n"
+            f"Vehicle: {agent.vehicle_type or 'N/A'}\n"
+            f"Active: {'Yes' if agent.is_active else 'No'}\n\n"
+        )
+    return text
+
+
+async def _render_delivery_tracking_text(session: AsyncSession, limit: int = 20) -> str:
+    result = await session.execute(
+        select(Delivery)
+        .options(
+            joinedload(Delivery.agent),
+            joinedload(Delivery.order).joinedload(Order.buyer),
+            joinedload(Delivery.order).joinedload(Order.seller).joinedload(SellerProfile.user),
+        )
+        .order_by(Delivery.updated_at.desc())
+        .limit(limit)
+    )
+    deliveries = result.scalars().all()
+    if not deliveries:
+        return "<b>Delivery Tracking</b>\n\nNo deliveries found."
+
+    text = "<b>Delivery Tracking (latest 20)</b>\n\n"
+    for delivery in deliveries:
+        order = delivery.order
+        buyer_name = order.buyer.first_name if order and order.buyer else "Unknown"
+        seller_name = (
+            order.seller.user.first_name if order and order.seller and order.seller.user else "Unknown"
+        )
+        agent_name = delivery.agent.name if delivery.agent else "Unassigned"
+        text += (
+            f"<b>Delivery #{delivery.id}</b> | Order #{delivery.order_id}\n"
+            f"Status: {delivery.status.value}\n"
+            f"Agent: {agent_name}\n"
+            f"Buyer: {buyer_name} | Seller: {seller_name}\n"
+            f"Updated: {delivery.updated_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+        )
+    return text
+
+
+def _delivery_assign_pick_keyboard(deliveries: list[Delivery]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for delivery in deliveries:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"Assign Order #{delivery.order_id}",
+                    callback_data=f"admin_delivery_assign_{delivery.id}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="Track Deliveries", callback_data="admin_delivery_tracking")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _delivery_assign_agent_keyboard(delivery_id: int, agents: list[DeliveryAgent]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for agent in agents:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{agent.name} (#{agent.id})",
+                    callback_data=f"admin_delivery_set_{delivery_id}_{agent.id}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="Back to Assign Delivery", callback_data="admin_delivery_assign_picker")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _get_broadcast_recipient_ids(session: AsyncSession, audience: str) -> list[str]:
@@ -708,6 +804,248 @@ async def admin_listings(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
     text = await _render_listings_text(session)
     await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
+
+
+@router.callback_query(F.data == "admin_delivery_agents")
+async def admin_delivery_agents(callback: CallbackQuery, session: AsyncSession):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    text = await _render_delivery_agents_text(session)
+    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
+
+
+@router.callback_query(F.data == "admin_delivery_agent_add")
+async def admin_delivery_agent_add(callback: CallbackQuery, state: FSMContext):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await state.clear()
+    await state.set_state(AdminStates.awaiting_delivery_agent_name)
+    await safe_edit_text(
+        callback,
+        "<b>Add Delivery Agent</b>\n\nStep 1/3\nSend the rider full name.",
+        parse_mode="HTML",
+        reply_markup=_delete_help_keyboard(),
+    )
+
+
+@router.message(AdminStates.awaiting_delivery_agent_name)
+async def receive_delivery_agent_name(message: Message, state: FSMContext):
+    if not _is_admin(message.from_user.id):
+        await message.reply("You are not authorized to use this command.")
+        await state.clear()
+        return
+
+    name = (message.text or "").strip()
+    if len(name) < 2:
+        await message.reply("Please send a valid name (at least 2 characters).")
+        return
+
+    await state.update_data(delivery_agent_name=name)
+    await state.set_state(AdminStates.awaiting_delivery_agent_phone)
+    await message.reply("Step 2/3\nSend phone number (or type 'none').")
+
+
+@router.message(AdminStates.awaiting_delivery_agent_phone)
+async def receive_delivery_agent_phone(message: Message, state: FSMContext):
+    if not _is_admin(message.from_user.id):
+        await message.reply("You are not authorized to use this command.")
+        await state.clear()
+        return
+
+    phone = (message.text or "").strip()
+    if phone.lower() == "none":
+        phone = ""
+
+    await state.update_data(delivery_agent_phone=phone)
+    await state.set_state(AdminStates.awaiting_delivery_agent_vehicle)
+    await message.reply("Step 3/3\nSend vehicle type (e.g., Bike) or type 'none'.")
+
+
+@router.message(AdminStates.awaiting_delivery_agent_vehicle)
+async def receive_delivery_agent_vehicle(message: Message, state: FSMContext, session: AsyncSession):
+    if not _is_admin(message.from_user.id):
+        await message.reply("You are not authorized to use this command.")
+        await state.clear()
+        return
+
+    vehicle = (message.text or "").strip()
+    if vehicle.lower() == "none":
+        vehicle = ""
+
+    data = await state.get_data()
+    name = (data.get("delivery_agent_name") or "").strip()
+    phone = (data.get("delivery_agent_phone") or "").strip()
+    if not name:
+        await state.clear()
+        await message.reply("Session expired. Open /admin_tools and try again.")
+        return
+
+    raw_key = f"vdl_{secrets.token_urlsafe(24)}"
+    key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    agent = DeliveryAgent(
+        name=name,
+        phone=phone or None,
+        vehicle_type=vehicle or None,
+        api_key_hash=key_hash,
+        is_active=True,
+    )
+    session.add(agent)
+    await session.commit()
+    await session.refresh(agent)
+    await state.clear()
+
+    await message.reply(
+        (
+            "<b>Delivery Agent Added</b>\n\n"
+            f"<b>ID:</b> {agent.id}\n"
+            f"<b>Name:</b> {agent.name}\n"
+            f"<b>Phone:</b> {agent.phone or 'N/A'}\n"
+            f"<b>Vehicle:</b> {agent.vehicle_type or 'N/A'}\n"
+            f"<b>API Key:</b> <code>{raw_key}</code>\n\n"
+            "Store this key securely. It is shown only once."
+        ),
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_delivery_tracking")
+async def admin_delivery_tracking(callback: CallbackQuery, session: AsyncSession):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    text = await _render_delivery_tracking_text(session)
+    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
+
+
+@router.callback_query(F.data == "admin_delivery_assign_picker")
+async def admin_delivery_assign_picker(callback: CallbackQuery, session: AsyncSession):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    result = await session.execute(
+        select(Delivery)
+        .where(Delivery.status.in_([DeliveryStatus.PENDING_ASSIGNMENT, DeliveryStatus.ASSIGNED]))
+        .order_by(Delivery.updated_at.desc())
+        .limit(15)
+    )
+    deliveries = result.scalars().all()
+    if not deliveries:
+        await safe_edit_text(
+            callback,
+            "<b>Assign Delivery</b>\n\nNo deliveries available for assignment.",
+            parse_mode="HTML",
+            reply_markup=_admin_tools_keyboard(),
+        )
+        return
+    await safe_edit_text(
+        callback,
+        "<b>Assign Delivery</b>\n\nSelect an order to assign or re-assign an agent.",
+        parse_mode="HTML",
+        reply_markup=_delivery_assign_pick_keyboard(deliveries),
+    )
+
+
+@router.callback_query(F.data.startswith("admin_delivery_assign_"))
+async def admin_delivery_assign_select(callback: CallbackQuery, session: AsyncSession):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    delivery_id = int(callback.data.replace("admin_delivery_assign_", ""))
+    delivery = await session.get(Delivery, delivery_id)
+    if not delivery:
+        await safe_edit_text(callback, "Delivery not found.", reply_markup=_admin_tools_keyboard())
+        return
+
+    result = await session.execute(
+        select(DeliveryAgent)
+        .where(DeliveryAgent.is_active.is_(True))
+        .order_by(DeliveryAgent.created_at.desc())
+        .limit(20)
+    )
+    agents = result.scalars().all()
+    if not agents:
+        await safe_edit_text(
+            callback,
+            "<b>No Active Agents</b>\n\nCreate/activate delivery agents first.",
+            parse_mode="HTML",
+            reply_markup=_admin_tools_keyboard(),
+        )
+        return
+
+    await safe_edit_text(
+        callback,
+        f"<b>Assign Agent</b>\n\nOrder #{delivery.order_id} (Delivery #{delivery.id})",
+        parse_mode="HTML",
+        reply_markup=_delivery_assign_agent_keyboard(delivery.id, agents),
+    )
+
+
+@router.callback_query(F.data.startswith("admin_delivery_set_"))
+async def admin_delivery_set_agent(callback: CallbackQuery, session: AsyncSession):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    match = re.match(r"^admin_delivery_set_(\d+)_(\d+)$", callback.data or "")
+    if not match:
+        await safe_edit_text(callback, "Invalid delivery assignment payload.", reply_markup=_admin_tools_keyboard())
+        return
+    delivery_id = int(match.group(1))
+    agent_id = int(match.group(2))
+
+    result = await session.execute(
+        select(Delivery)
+        .options(joinedload(Delivery.order).joinedload(Order.buyer))
+        .where(Delivery.id == delivery_id)
+    )
+    delivery = result.scalars().first()
+    if not delivery:
+        await safe_edit_text(callback, "Delivery not found.", reply_markup=_admin_tools_keyboard())
+        return
+
+    agent = await session.get(DeliveryAgent, agent_id)
+    if not agent or not agent.is_active:
+        await safe_edit_text(callback, "Agent not available.", reply_markup=_admin_tools_keyboard())
+        return
+
+    delivery.agent_id = agent.id
+    delivery.status = DeliveryStatus.ASSIGNED
+    await session.commit()
+
+    if delivery.order and delivery.order.buyer and delivery.order.buyer.telegram_id:
+        try:
+            await callback.bot.send_message(
+                chat_id=int(delivery.order.buyer.telegram_id),
+                text=(
+                    f"Delivery assigned for order #{delivery.order_id}.\n"
+                    f"Rider: {agent.name}\n"
+                    f"Phone: {agent.phone or 'N/A'}"
+                ),
+            )
+        except Exception:
+            pass
+
+    await safe_edit_text(
+        callback,
+        (
+            "<b>Delivery Assigned</b>\n\n"
+            f"Order #{delivery.order_id}\n"
+            f"Delivery #{delivery.id}\n"
+            f"Agent: {agent.name} (#{agent.id})"
+        ),
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
 
 
 @router.callback_query(F.data.startswith("admin_delete_listing_"))
