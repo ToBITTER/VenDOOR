@@ -16,6 +16,16 @@ from db.models import Order, OrderStatus, SellerProfile, User
 router = Router()
 
 
+def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
+    payload = (callback_data or "").strip()
+    if not payload.startswith(prefix):
+        return None
+    value = payload.replace(prefix, "", 1).strip()
+    if not value.isdigit():
+        return None
+    return int(value)
+
+
 @router.callback_query(F.data == "my_orders")
 async def my_orders(callback: CallbackQuery, session: AsyncSession):
     buyer_id_str = str(callback.from_user.id)
@@ -66,7 +76,7 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
 
         text += (
             f"<b>Order #{order.id}</b>\n"
-            f"Product: {order.listing.title}\n"
+            f"Product: {order.listing.title if order.listing else 'Unknown listing'}\n"
             f"Qty: {order.quantity}\n"
             f"Amount: NGN {order.amount:,.2f}\n"
             f"Status: {status_emoji}\n"
@@ -88,7 +98,10 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("view_order_"))
 async def view_order(callback: CallbackQuery, session: AsyncSession):
-    order_id = int(callback.data.replace("view_order_", ""))
+    order_id = _callback_int_suffix(callback.data, "view_order_")
+    if order_id is None:
+        await safe_answer_callback(callback, text="Invalid order selection", show_alert=True)
+        return
 
     user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
     user = user_result.scalars().first()
@@ -119,8 +132,8 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
 
     text = (
         f"<b>Order #{order.id}</b>\n\n"
-        f"<b>Product:</b> {order.listing.title}\n"
-        f"<b>Seller:</b> {order.seller.user.first_name}\n"
+        f"<b>Product:</b> {order.listing.title if order.listing else 'Unknown listing'}\n"
+        f"<b>Seller:</b> {order.seller.user.first_name if order.seller and order.seller.user else 'Unknown seller'}\n"
         f"<b>Quantity:</b> {order.quantity}\n"
         f"<b>Amount:</b> NGN {order.amount:,.2f}\n"
         f"<b>Status:</b> {order.status.value}\n\n"
@@ -144,7 +157,10 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("order_confirm_"))
 async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
-    order_id = int(callback.data.replace("order_confirm_", ""))
+    order_id = _callback_int_suffix(callback.data, "order_confirm_")
+    if order_id is None:
+        await safe_answer_callback(callback, text="Invalid order confirmation", show_alert=True)
+        return
 
     user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
     user = user_result.scalars().first()
@@ -193,6 +209,6 @@ async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
             parse_mode="HTML",
             reply_markup=get_main_menu_inline(),
         )
-    except Exception as e:
+    except Exception:
         await session.rollback()
-        await safe_edit_text(callback, f"Error: {e}")
+        await safe_edit_text(callback, "Could not confirm receipt right now. Please try again.")

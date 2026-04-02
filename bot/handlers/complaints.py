@@ -20,6 +20,16 @@ from db.models import Complaint, DisputeStatus, Order, OrderStatus, SellerProfil
 router = Router()
 
 
+def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
+    payload = (callback_data or "").strip()
+    if not payload.startswith(prefix):
+        return None
+    value = payload.replace(prefix, "", 1).strip()
+    if not value.isdigit():
+        return None
+    return int(value)
+
+
 class ComplaintStates(StatesGroup):
     awaiting_order_selection = State()
     awaiting_subject = State()
@@ -99,7 +109,10 @@ async def start_complaint(callback: CallbackQuery, state: FSMContext, session: A
 
 @router.callback_query(F.data.startswith("complaint_order_"), StateFilter(ComplaintStates.awaiting_order_selection))
 async def select_complaint_order(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
-    order_id = int(callback.data.replace("complaint_order_", ""))
+    order_id = _callback_int_suffix(callback.data, "complaint_order_")
+    if order_id is None:
+        await safe_answer_callback(callback, text="Invalid order selection", show_alert=True)
+        return
 
     result = await session.execute(
         select(Order).options(selectinload(Order.listing)).where(Order.id == order_id)
@@ -175,7 +188,8 @@ async def handle_complaint_evidence_photo(message: Message, state: FSMContext):
 
 @router.message(ComplaintStates.awaiting_evidence)
 async def handle_complaint_evidence_skip(message: Message, state: FSMContext):
-    if message.text.lower() in ["skip", "no evidence", "-"]:
+    text = (message.text or "").strip().lower()
+    if text in ["skip", "no evidence", "-"]:
         await show_complaint_confirmation(message, state)
     else:
         await message.reply("Please send a photo or type 'Skip'.")
@@ -215,6 +229,10 @@ async def submit_complaint(callback: CallbackQuery, state: FSMContext, session: 
     try:
         result = await session.execute(select(User).where(User.telegram_id == user_id_str))
         user = result.scalars().first()
+        if not user:
+            await safe_edit_text(callback, "User not found. Please send /start.", reply_markup=get_main_menu_inline())
+            await state.clear()
+            return
 
         complaint = Complaint(
             order_id=data.get("order_id"),
@@ -238,8 +256,12 @@ async def submit_complaint(callback: CallbackQuery, state: FSMContext, session: 
             reply_markup=get_main_menu_inline(),
         )
 
-    except Exception as e:
+    except Exception:
         await session.rollback()
-        await safe_edit_text(callback, f"Error: {e}", reply_markup=get_main_menu_inline())
+        await safe_edit_text(
+            callback,
+            "Could not submit complaint right now. Please try again.",
+            reply_markup=get_main_menu_inline(),
+        )
 
     await state.clear()

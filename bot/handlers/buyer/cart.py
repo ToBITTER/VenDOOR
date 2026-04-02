@@ -18,6 +18,16 @@ from db.models import CartItem, Listing, User
 router = Router()
 
 
+def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
+    payload = (callback_data or "").strip()
+    if not payload.startswith(prefix):
+        return None
+    value = payload.replace(prefix, "", 1).strip()
+    if not value.isdigit():
+        return None
+    return int(value)
+
+
 def _cart_actions_keyboard(cart_item_ids: list[int]) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=f"Remove item #{item_id}", callback_data=f"cart_remove_{item_id}")] for item_id in cart_item_ids]
     rows.append([InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")])
@@ -27,7 +37,10 @@ def _cart_actions_keyboard(cart_item_ids: list[int]) -> InlineKeyboardMarkup:
 
 @router.callback_query(F.data.startswith("add_to_cart_"))
 async def add_to_cart(callback: CallbackQuery, session: AsyncSession):
-    listing_id = int(callback.data.replace("add_to_cart_", ""))
+    listing_id = _callback_int_suffix(callback.data, "add_to_cart_")
+    if listing_id is None:
+        await safe_answer_callback(callback, text="Invalid listing selection.", show_alert=True)
+        return
 
     buyer_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
     buyer = buyer_result.scalars().first()
@@ -116,7 +129,10 @@ async def my_cart(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("cart_remove_"))
 async def remove_cart_item(callback: CallbackQuery, session: AsyncSession):
-    cart_item_id = int(callback.data.replace("cart_remove_", ""))
+    cart_item_id = _callback_int_suffix(callback.data, "cart_remove_")
+    if cart_item_id is None:
+        await safe_answer_callback(callback, text="Invalid cart item.", show_alert=True)
+        return
     buyer_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
     buyer = buyer_result.scalars().first()
     if not buyer:

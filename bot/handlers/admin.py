@@ -43,6 +43,16 @@ def _is_admin(telegram_user_id: int) -> bool:
     return str(telegram_user_id) == str(settings.admin_telegram_id)
 
 
+def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
+    payload = (callback_data or "").strip()
+    if not payload.startswith(prefix):
+        return None
+    value = payload.replace(prefix, "", 1).strip()
+    if not value.isdigit():
+        return None
+    return int(value)
+
+
 def _pending_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -984,7 +994,10 @@ async def admin_delivery_assign_select(callback: CallbackQuery, session: AsyncSe
         return
     await safe_answer_callback(callback)
 
-    delivery_id = int(callback.data.replace("admin_delivery_assign_", ""))
+    delivery_id = _callback_int_suffix(callback.data, "admin_delivery_assign_")
+    if delivery_id is None:
+        await safe_edit_text(callback, "Invalid delivery selection.", reply_markup=_admin_tools_keyboard())
+        return
     delivery = await session.get(Delivery, delivery_id)
     if not delivery:
         await safe_edit_text(callback, "Delivery not found.", reply_markup=_admin_tools_keyboard())
@@ -1088,7 +1101,10 @@ async def delete_listing_by_button(callback: CallbackQuery, session: AsyncSessio
         return
     await safe_answer_callback(callback)
 
-    listing_id = int(callback.data.replace("admin_delete_listing_", ""))
+    listing_id = _callback_int_suffix(callback.data, "admin_delete_listing_")
+    if listing_id is None:
+        await safe_edit_text(callback, "Invalid listing payload.", reply_markup=_delete_help_keyboard())
+        return
     listing = await session.get(Listing, listing_id)
     if not listing:
         await safe_edit_text(callback, "Listing not found.", reply_markup=_delete_help_keyboard())
@@ -1121,7 +1137,10 @@ async def delete_vendor_by_button(callback: CallbackQuery, session: AsyncSession
         return
     await safe_answer_callback(callback)
 
-    seller_id = int(callback.data.replace("admin_delete_vendor_", ""))
+    seller_id = _callback_int_suffix(callback.data, "admin_delete_vendor_")
+    if seller_id is None:
+        await safe_edit_text(callback, "Invalid vendor payload.", reply_markup=_delete_help_keyboard())
+        return
     seller = await session.get(SellerProfile, seller_id)
     if not seller:
         await safe_edit_text(callback, "Vendor not found.", reply_markup=_delete_help_keyboard())
@@ -1154,7 +1173,10 @@ async def delete_user_by_button(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
 
-    user_id = int(callback.data.replace("admin_delete_user_", ""))
+    user_id = _callback_int_suffix(callback.data, "admin_delete_user_")
+    if user_id is None:
+        await safe_edit_text(callback, "Invalid user payload.", reply_markup=_delete_help_keyboard())
+        return
     user = await session.get(User, user_id)
     if not user:
         await safe_edit_text(callback, "User not found.", reply_markup=_delete_help_keyboard())
@@ -1476,7 +1498,10 @@ async def approve_seller(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
 
-    seller_id = int(callback.data.replace("admin_approve_", ""))
+    seller_id = _callback_int_suffix(callback.data, "admin_approve_")
+    if seller_id is None:
+        await safe_edit_text(callback, "Invalid seller payload.", reply_markup=_pending_keyboard())
+        return
     result = await session.execute(
         select(SellerProfile).options(joinedload(SellerProfile.user)).where(SellerProfile.id == seller_id)
     )
@@ -1511,7 +1536,10 @@ async def reject_seller(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
 
-    seller_id = int(callback.data.replace("admin_reject_", ""))
+    seller_id = _callback_int_suffix(callback.data, "admin_reject_")
+    if seller_id is None:
+        await safe_edit_text(callback, "Invalid seller payload.", reply_markup=_pending_keyboard())
+        return
     result = await session.execute(
         select(SellerProfile).options(joinedload(SellerProfile.user)).where(SellerProfile.id == seller_id)
     )

@@ -23,6 +23,16 @@ CACHE_TTL_SECONDS = 20
 _CATEGORY_CACHE: dict[str, tuple[float, list[Listing]]] = {}
 
 
+def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
+    payload = (callback_data or "").strip()
+    if not payload.startswith(prefix):
+        return None
+    value = payload.replace(prefix, "", 1).strip()
+    if not value.isdigit():
+        return None
+    return int(value)
+
+
 def format_category_label(category: Category, accessory_subcategory: AccessorySubcategory | None = None) -> str:
     if category == Category.JEWELRY:
         if accessory_subcategory:
@@ -328,7 +338,10 @@ async def browse_accessories_subcategory(callback: CallbackQuery, session: Async
 
 @router.callback_query(F.data.startswith("seller_profile_"))
 async def view_seller_profile(callback: CallbackQuery, session: AsyncSession):
-    seller_id = int(callback.data.replace("seller_profile_", ""))
+    seller_id = _callback_int_suffix(callback.data, "seller_profile_")
+    if seller_id is None:
+        await safe_answer_callback(callback, text="Invalid seller profile.", show_alert=True)
+        return
     await safe_answer_callback(callback)
 
     result = await session.execute(

@@ -36,13 +36,18 @@ async def set_default_commands(bot: Bot) -> None:
     await bot.set_my_commands(commands, BotCommandScopeDefault())
 
     if settings.admin_telegram_id:
+        try:
+            admin_chat_id = int(str(settings.admin_telegram_id).strip())
+        except (TypeError, ValueError):
+            logger.warning("Skipping admin command scope: invalid ADMIN_TELEGRAM_ID")
+            return
         admin_commands = [
             BotCommand(command="pending_sellers", description="Review pending seller approvals"),
             BotCommand(command="admin_tools", description="Open admin tools panel"),
         ]
         await bot.set_my_commands(
             admin_commands,
-            BotCommandScopeChat(chat_id=int(settings.admin_telegram_id)),
+            BotCommandScopeChat(chat_id=admin_chat_id),
         )
 
 
@@ -77,8 +82,12 @@ async def main():
     dispatcher = create_dispatcher()
     
     # Initialize bot instance for notification service
-    from services.delivery_notifications import set_bot_instance
-    set_bot_instance(bot)
+    try:
+        from services.delivery_notifications import set_bot_instance
+
+        set_bot_instance(bot)
+    except Exception:
+        logger.exception("Failed to initialize delivery notification bot instance")
     
     # Set startup/shutdown handlers
     dispatcher.startup.register(lambda disp: on_startup(disp, bot))

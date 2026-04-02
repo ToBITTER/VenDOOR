@@ -2,12 +2,17 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 
-from db.models import Delivery, DeliveryOrder, DeliveryAgent, Order, DeliveryStatus, User
+from db.models import Delivery, DeliveryOrder, DeliveryAgent, Order, DeliveryStatus, SellerProfile
 from core.config import get_settings
 
 settings = get_settings()
 bot_instance = None  # Will be set by bot initialization
+
+
+def _full_name(first_name: str | None, last_name: str | None) -> str:
+    return f"{first_name or ''} {last_name or ''}".strip() or "Unknown"
 
 
 def set_bot_instance(bot):
@@ -32,6 +37,7 @@ async def notify_agent_delivery_assigned(delivery_id: int, session: AsyncSession
     # Fetch delivery with all linked orders
     result = await session.execute(
         select(Delivery)
+        .options(joinedload(Delivery.agent))
         .where(Delivery.id == delivery_id)
     )
     delivery = result.scalars().first()
@@ -41,6 +47,11 @@ async def notify_agent_delivery_assigned(delivery_id: int, session: AsyncSession
     # Get delivery orders sorted by sequence
     result = await session.execute(
         select(DeliveryOrder)
+        .options(
+            joinedload(DeliveryOrder.order).joinedload(Order.buyer),
+            joinedload(DeliveryOrder.order).joinedload(Order.listing),
+            joinedload(DeliveryOrder.order).joinedload(Order.seller).joinedload(SellerProfile.user),
+        )
         .where(DeliveryOrder.delivery_id == delivery_id)
         .order_by(DeliveryOrder.sequence)
     )
@@ -58,7 +69,8 @@ async def notify_agent_delivery_assigned(delivery_id: int, session: AsyncSession
     first_order = delivery_orders[0].order
     if first_order:
         buyer = first_order.buyer
-        message_lines.append(f"<b>Buyer:</b> {buyer.full_name}\n")
+        if buyer:
+            message_lines.append(f"<b>Buyer:</b> {_full_name(buyer.first_name, buyer.last_name)}\n")
         message_lines.append(f"<b>Delivery To:</b> {first_order.buyer_address or 'TBD'}\n")
 
     message_lines.append("\n<b>Pickup Sequence:</b>\n")
@@ -72,7 +84,9 @@ async def notify_agent_delivery_assigned(delivery_id: int, session: AsyncSession
 
         total_items += order.quantity
         seller = order.seller
-        seller_name = seller.user.full_name if seller and seller.user else "Unknown"
+        seller_name = (
+            _full_name(seller.user.first_name, seller.user.last_name) if seller and seller.user else "Unknown"
+        )
         room = seller.room_number if seller else "N/A"
         hall = seller.hall if seller else "N/A"
 
@@ -109,7 +123,12 @@ async def notify_agent_delivery_assigned(delivery_id: int, session: AsyncSession
         print(f"Failed to notify agent {delivery.agent.telegram_id}: {e}")
 
 
-async def notify_buyer_delivery_status_update(order_id: int, status: str, agent: DeliveryAgent | None, session: AsyncSession = None):
+async def notify_buyer_delivery_status_update(
+    order_id: int,
+    status: str,
+    agent: DeliveryAgent | None,
+    session: AsyncSession | None = None,
+):
     """
     Send notification to buyer when delivery status updates.
     
@@ -121,13 +140,13 @@ async def notify_buyer_delivery_status_update(order_id: int, status: str, agent:
 
     # Fetch order and buyer
     if session:
-        result = await session.execute(select(Order).where(Order.id == order_id))
+        result = await session.execute(select(Order).options(joinedload(Order.buyer)).where(Order.id == order_id))
         order = result.scalars().first()
     else:
         # Can't proceed without session
         return
 
-    if not order or not order.buyer.telegram_id:
+    if not order or not order.buyer or not order.buyer.telegram_id:
         return
 
     # Build status message
