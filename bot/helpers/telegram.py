@@ -82,3 +82,28 @@ async def safe_render_text_screen(callback: CallbackQuery, text: str, **kwargs) 
         return
 
     await safe_edit_text(callback, text, **kwargs)
+
+
+async def safe_replace_with_screen(
+    callback: CallbackQuery,
+    text: str,
+    photo: str | None = None,
+    **kwargs,
+) -> None:
+    """
+    Remove the previous callback message and render the next screen as a fresh message.
+    Use this for menu-to-menu navigation to avoid stacked old menus.
+    """
+    if not callback.message:
+        return
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    if photo:
+        await callback.message.answer_photo(photo=photo, caption=text, **kwargs)
+        return
+
+    await callback.message.answer(text, **kwargs)

@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.helpers.brand_assets import get_help_banner, get_main_menu_banner, get_welcome_banner
-from bot.helpers.telegram import safe_answer_callback, safe_edit_text, safe_render_text_screen
+from bot.helpers.telegram import (
+    safe_answer_callback,
+    safe_edit_text,
+    safe_replace_with_screen,
+)
 from bot.keyboards.main_menu import get_main_menu_inline
 from db.models import User
 
@@ -67,16 +71,13 @@ async def back_to_menu_handler(callback: CallbackQuery):
         "What would you like to do today?"
     )
     main_menu_banner = get_main_menu_banner()
-    if main_menu_banner and callback.message:
-        await callback.message.answer_photo(
-            photo=main_menu_banner,
-            caption=menu_text,
-            parse_mode="HTML",
-            reply_markup=get_main_menu_inline(),
-        )
-        return
-
-    await safe_render_text_screen(callback, menu_text, parse_mode="HTML", reply_markup=get_main_menu_inline())
+    await safe_replace_with_screen(
+        callback,
+        menu_text,
+        photo=main_menu_banner,
+        parse_mode="HTML",
+        reply_markup=get_main_menu_inline(),
+    )
 
 
 @router.callback_query(F.data == "help")
@@ -104,12 +105,10 @@ async def help_handler(callback: CallbackQuery):
 
     await safe_answer_callback(callback)
     help_banner = get_help_banner()
-    if help_banner:
-        await callback.message.answer_photo(
-            photo=help_banner,
-            caption=help_text,
-            parse_mode="HTML",
-            reply_markup=get_main_menu_inline(),
-        )
-    else:
-        await safe_edit_text(callback, help_text, parse_mode="HTML", reply_markup=get_main_menu_inline())
+    await safe_replace_with_screen(
+        callback,
+        help_text,
+        photo=help_banner,
+        parse_mode="HTML",
+        reply_markup=get_main_menu_inline(),
+    )
