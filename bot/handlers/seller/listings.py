@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.helpers.telegram import safe_answer_callback, safe_edit_text
+from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline, get_seller_actions
 from db.models import AccessorySubcategory, Category, Listing, SellerProfile, User
 
@@ -69,7 +69,7 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
     result = await session.execute(select(SellerProfile).where(SellerProfile.user_id == user.id))
     seller = result.scalars().first()
     if not seller:
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "You are not registered as a seller.\n\nRegister now to start selling.",
             reply_markup=get_main_menu_inline(),
@@ -81,7 +81,7 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
     )
     listings = result.scalars().all()
     if not listings:
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "You have not created any listings yet.\n\nCreate your first listing now.",
             reply_markup=get_seller_actions(),
@@ -106,7 +106,7 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
             [InlineKeyboardButton(text="Back", callback_data="back_to_menu")],
         ]
     )
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
+    await safe_replace_with_screen(callback, text, parse_mode="HTML", reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "seller_create_listing")
@@ -119,7 +119,7 @@ async def start_create_listing(callback: CallbackQuery, state: FSMContext, sessi
     seller = result.scalars().first()
 
     if not seller:
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "You must be registered as a seller first.",
             reply_markup=get_main_menu_inline(),
@@ -127,7 +127,7 @@ async def start_create_listing(callback: CallbackQuery, state: FSMContext, sessi
         return
 
     if not seller.verified:
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "Your seller account is still pending verification.\n\n"
             "You can create listings after verification.",
@@ -136,7 +136,7 @@ async def start_create_listing(callback: CallbackQuery, state: FSMContext, sessi
         return
 
     await state.update_data(seller_id=seller.id)
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         "<b>Create New Listing</b>\n\nWhat is the product title?",
         parse_mode="HTML",
@@ -219,7 +219,7 @@ async def handle_listing_category(callback: CallbackQuery, state: FSMContext):
                 [InlineKeyboardButton(text="Watches", callback_data="acc_WATCHES")],
             ]
         )
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "<b>Accessories Type</b>\n\nChoose a subcategory.",
             parse_mode="HTML",
@@ -230,7 +230,7 @@ async def handle_listing_category(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(category=category, accessory_subcategory=None)
     if category_uses_quantity(category):
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "<b>Item Quantity</b>\n\nHow many units are available? (1-500)",
             parse_mode="HTML",
@@ -239,7 +239,7 @@ async def handle_listing_category(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(quantity=1)
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         "<b>Base Price (NGN)</b>\n\nEnter base price. Buyer pays 5% platform fee.",
         parse_mode="HTML",
@@ -258,7 +258,7 @@ async def handle_accessory_subcategory(callback: CallbackQuery, state: FSMContex
         return
 
     await state.update_data(accessory_subcategory=accessory_subcategory)
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         "<b>Item Quantity</b>\n\nHow many units are available? (1-500)",
         parse_mode="HTML",
@@ -342,7 +342,7 @@ async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, s
         )
         session.add(listing)
         await session.commit()
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             (
                 "<b>Listing Created</b>\n\n"
@@ -355,6 +355,6 @@ async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, s
         )
     except Exception as e:
         await session.rollback()
-        await safe_edit_text(callback, f"Error: {e}", reply_markup=get_seller_actions())
+        await safe_replace_with_screen(callback, f"Error: {e}", reply_markup=get_seller_actions())
 
     await state.clear()

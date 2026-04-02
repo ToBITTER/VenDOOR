@@ -124,6 +124,12 @@ def _build_listing_card_keyboard(listing: Listing) -> InlineKeyboardMarkup:
     )
 
 
+def _build_category_bottom_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")]]
+    )
+
+
 async def _send_listing_card(callback: CallbackQuery, listing: Listing, card_text: str) -> None:
     card_keyboard = _build_listing_card_keyboard(listing)
     for _ in range(2):
@@ -226,6 +232,11 @@ async def _show_category_page(
             f"Seller: {seller_name}"
         )
         await _send_listing_card(callback, listing, card_text)
+
+    await callback.message.answer(
+        "End of this category page.",
+        reply_markup=_build_category_bottom_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "browse_catalog")

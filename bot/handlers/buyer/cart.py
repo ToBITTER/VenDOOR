@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from bot.helpers.telegram import safe_answer_callback, safe_edit_text
+from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline
 from db.models import CartItem, Listing, User
 
@@ -91,7 +91,7 @@ async def my_cart(callback: CallbackQuery, session: AsyncSession):
     )
     items = result.scalars().all()
     if not items:
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "Your cart is empty.\n\nBrowse catalog and add items.",
             reply_markup=get_main_menu_inline(),
@@ -119,7 +119,7 @@ async def my_cart(callback: CallbackQuery, session: AsyncSession):
     lines.append(f"<b>Total:</b> NGN {total:,.2f}")
     lines.append("At checkout, orders are split by seller for fulfillment.")
 
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         "\n".join(lines),
         parse_mode="HTML",

@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.helpers.telegram import safe_answer_callback, safe_edit_text
+from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_confirmation_keyboard, get_main_menu_inline
 from core.config import get_settings
 from db.models import SellerProfile, User
@@ -45,7 +45,7 @@ async def start_seller_registration(callback: CallbackQuery, state: FSMContext, 
     await safe_answer_callback(callback)
 
     if existing_seller:
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "You are already registered as a seller.\n\n"
             f"Status: {'Verified' if existing_seller.verified else 'Pending verification'}\n\n"
@@ -68,7 +68,7 @@ async def start_seller_registration(callback: CallbackQuery, state: FSMContext, 
         ]
     )
 
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
+    await safe_replace_with_screen(callback, text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(SellerRegistrationStates.awaiting_student_choice)
 
 
@@ -77,7 +77,7 @@ async def handle_student_yes(callback: CallbackQuery, state: FSMContext):
     await safe_answer_callback(callback)
     await state.update_data(is_student=True)
 
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         "<b>Student Email</b>\n\n"
         "Please enter your university email address.\n"
@@ -92,7 +92,7 @@ async def handle_student_no(callback: CallbackQuery, state: FSMContext):
     await safe_answer_callback(callback)
     await state.update_data(is_student=False)
 
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         "<b>ID Document</b>\n\n"
         "Please send a photo of your ID document\n"
@@ -300,7 +300,12 @@ async def confirm_seller_registration(callback: CallbackQuery, state: FSMContext
             "We will notify you when verification is complete."
         )
 
-        await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=get_main_menu_inline())
+        await safe_replace_with_screen(
+            callback,
+            text,
+            parse_mode="HTML",
+            reply_markup=get_main_menu_inline(),
+        )
 
         if settings.admin_telegram_id:
             try:
@@ -317,7 +322,7 @@ async def confirm_seller_registration(callback: CallbackQuery, state: FSMContext
 
     except Exception as e:
         await session.rollback()
-        await safe_edit_text(callback, f"Error: {e}", reply_markup=get_main_menu_inline())
+        await safe_replace_with_screen(callback, f"Error: {e}", reply_markup=get_main_menu_inline())
 
     await state.clear()
 
@@ -325,7 +330,7 @@ async def confirm_seller_registration(callback: CallbackQuery, state: FSMContext
 @router.callback_query(F.data == "confirm_no", StateFilter(SellerRegistrationStates.confirming_details))
 async def reject_confirmation(callback: CallbackQuery, state: FSMContext):
     await safe_answer_callback(callback)
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         "Edit your details from the beginning.",
         reply_markup=get_main_menu_inline(),

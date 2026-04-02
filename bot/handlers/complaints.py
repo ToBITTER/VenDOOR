@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from bot.helpers.brand_assets import get_empty_state
-from bot.helpers.telegram import safe_answer_callback, safe_edit_text
+from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline
 from db.models import Complaint, DisputeStatus, Order, OrderStatus, SellerProfile, User
 
@@ -71,18 +71,12 @@ async def start_complaint(callback: CallbackQuery, state: FSMContext, session: A
             "No orders available to file complaints.\n\n"
             "Only orders in PAID or COMPLETED status can be disputed."
         )
-        if empty_image:
-            await callback.message.answer_photo(
-                photo=empty_image,
-                caption=empty_text,
-                reply_markup=get_main_menu_inline(),
-            )
-        else:
-            await safe_edit_text(
-                callback,
-                empty_text,
-                reply_markup=get_main_menu_inline(),
-            )
+        await safe_replace_with_screen(
+            callback,
+            empty_text,
+            photo=empty_image,
+            reply_markup=get_main_menu_inline(),
+        )
         return
 
     keyboard = InlineKeyboardMarkup(
@@ -98,7 +92,7 @@ async def start_complaint(callback: CallbackQuery, state: FSMContext, session: A
         + [[InlineKeyboardButton(text="Cancel", callback_data="back_to_menu")]]
     )
 
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         "<b>File a Complaint</b>\n\nSelect an order to file a complaint about:",
         parse_mode="HTML",
@@ -126,7 +120,7 @@ async def select_complaint_order(callback: CallbackQuery, state: FSMContext, ses
     await safe_answer_callback(callback)
     await state.update_data(order_id=order_id)
 
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         f"Order #{order.id} - {order.listing.title}\n\n"
         "What is the issue?\n\n"
@@ -230,7 +224,11 @@ async def submit_complaint(callback: CallbackQuery, state: FSMContext, session: 
         result = await session.execute(select(User).where(User.telegram_id == user_id_str))
         user = result.scalars().first()
         if not user:
-            await safe_edit_text(callback, "User not found. Please send /start.", reply_markup=get_main_menu_inline())
+            await safe_replace_with_screen(
+                callback,
+                "User not found. Please send /start.",
+                reply_markup=get_main_menu_inline(),
+            )
             await state.clear()
             return
 
@@ -245,7 +243,7 @@ async def submit_complaint(callback: CallbackQuery, state: FSMContext, session: 
         session.add(complaint)
         await session.commit()
 
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "<b>Complaint Submitted</b>\n\n"
             "Your complaint has been recorded.\n"
@@ -258,7 +256,7 @@ async def submit_complaint(callback: CallbackQuery, state: FSMContext, session: 
 
     except Exception:
         await session.rollback()
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "Could not submit complaint right now. Please try again.",
             reply_markup=get_main_menu_inline(),

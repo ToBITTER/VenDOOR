@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from bot.helpers.brand_assets import get_empty_state
-from bot.helpers.telegram import safe_answer_callback, safe_edit_text
+from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline, get_order_actions
 from db.models import Order, OrderStatus, SellerProfile, User
 
@@ -49,18 +49,12 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
     if not orders:
         empty_image = get_empty_state("no_orders")
         empty_text = "You have not placed any orders yet.\n\nStart shopping now!"
-        if empty_image:
-            await callback.message.answer_photo(
-                photo=empty_image,
-                caption=empty_text,
-                reply_markup=get_main_menu_inline(),
-            )
-        else:
-            await safe_edit_text(
-                callback,
-                empty_text,
-                reply_markup=get_main_menu_inline(),
-            )
+        await safe_replace_with_screen(
+            callback,
+            empty_text,
+            photo=empty_image,
+            reply_markup=get_main_menu_inline(),
+        )
         return
 
     text = "<b>Your Orders</b>\n\n"
@@ -93,7 +87,7 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
         ]
     )
 
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
+    await safe_replace_with_screen(callback, text, parse_mode="HTML", reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("view_order_"))
@@ -152,7 +146,12 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
 
     text += f"\n<b>Date:</b> {order.created_at.strftime('%d/%m/%Y %H:%M')}"
 
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=get_order_actions(order.id))
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=get_order_actions(order.id),
+    )
 
 
 @router.callback_query(F.data.startswith("order_confirm_"))
@@ -200,7 +199,7 @@ async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
         order.status = OrderStatus.COMPLETED
         await session.commit()
 
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "<b>Receipt Confirmed</b>\n\n"
             "Thank you for shopping with VenDOOR.\n"
@@ -211,4 +210,4 @@ async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
         )
     except Exception:
         await session.rollback()
-        await safe_edit_text(callback, "Could not confirm receipt right now. Please try again.")
+        await safe_replace_with_screen(callback, "Could not confirm receipt right now. Please try again.")
