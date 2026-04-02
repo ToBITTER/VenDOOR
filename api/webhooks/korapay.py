@@ -68,9 +68,9 @@ async def handle_korapay_webhook(
             # Unknown event
             return {"status": "ignored", "event": event}
     
-    except Exception as e:
+    except Exception:
         logger.exception("Webhook processing error")
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": "webhook_processing_failed"}
 
 
 async def _handle_payment_success(
@@ -87,6 +87,9 @@ async def _handle_payment_success(
     4. Schedule automatic release after 48 hours
     """
     try:
+        if not reference:
+            return {"status": "error", "error": "missing_reference"}
+
         # Find order
         result = await session.execute(
             select(Order)
@@ -199,10 +202,10 @@ async def _handle_payment_success(
             "order_id": order.id,
         }
     
-    except Exception as e:
+    except Exception:
         await session.rollback()
         logger.exception("Payment success handler error")
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": "payment_success_handler_failed"}
 
 
 async def _handle_payment_failed(reference: str, session: AsyncSession) -> dict:
@@ -211,6 +214,9 @@ async def _handle_payment_failed(reference: str, session: AsyncSession) -> dict:
     Cancel the order and notify buyer.
     """
     try:
+        if not reference:
+            return {"status": "error", "error": "missing_reference"}
+
         # Find order
         result = await session.execute(
             select(Order).where(Order.transaction_ref == reference)
@@ -250,7 +256,7 @@ async def _handle_payment_failed(reference: str, session: AsyncSession) -> dict:
             "order_id": order.id,
         }
     
-    except Exception as e:
+    except Exception:
         await session.rollback()
         logger.exception("Payment failed handler error")
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": "payment_failed_handler_failed"}

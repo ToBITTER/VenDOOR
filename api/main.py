@@ -37,6 +37,24 @@ BROADCAST_SEMAPHORE = asyncio.Semaphore(20)
 TELEGRAM_SECRET_HEADER = "x-telegram-bot-api-secret-token"
 
 
+def _log_production_gaps() -> None:
+    if settings.debug:
+        return
+
+    warnings: list[str] = []
+    if not settings.admin_api_key:
+        warnings.append("ADMIN_API_KEY is not set")
+    if not settings.telegram_webhook_secret:
+        warnings.append("TELEGRAM_WEBHOOK_SECRET is not set")
+    if not settings.korapay_webhook_secret:
+        warnings.append("KORAPAY_WEBHOOK_SECRET is not set")
+    if any(host in {"*", "localhost", "127.0.0.1"} for host in settings.allowed_hosts_list):
+        warnings.append("ALLOWED_HOSTS contains development/wildcard values")
+
+    for warning in warnings:
+        logger.warning("Production readiness warning: %s", warning)
+
+
 class BroadcastRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4096)
     audience: Literal["all", "buyers", "sellers", "verified_sellers"] = "all"
@@ -149,6 +167,7 @@ async def lifespan(app: FastAPI):
     app.state.bot = create_bot()
     app.state.dispatcher = create_dispatcher()
     app.state.bot_setup_task = asyncio.create_task(_configure_bot(app.state.bot))
+    _log_production_gaps()
 
     yield
     # Shutdown
