@@ -198,16 +198,6 @@ async def _show_category_page(
     )
     subcat_token = accessory_subcategory.name if accessory_subcategory else "ALL"
     control_keyboard = _build_category_page_keyboard(category, len(listings), page, subcat_token=subcat_token)
-    if category == Category.JEWELRY:
-        control_keyboard.inline_keyboard.insert(
-            0,
-            [
-                InlineKeyboardButton(text="Bags", callback_data="browse_acc_BAGS_0"),
-                InlineKeyboardButton(text="Jewelry", callback_data="browse_acc_JEWELRY_0"),
-                InlineKeyboardButton(text="Watches", callback_data="browse_acc_WATCHES_0"),
-                InlineKeyboardButton(text="All", callback_data="browse_acc_ALL_0"),
-            ],
-        )
     hero = get_category_hero(
         category.name,
         accessory_subcategory.name if accessory_subcategory else None,
