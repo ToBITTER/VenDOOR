@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from bot.helpers.telegram import safe_answer_callback, safe_edit_text
+from bot.helpers.telegram import safe_answer_callback, safe_edit_text, safe_replace_with_screen
 from core.config import get_settings
 from db.models import Delivery, DeliveryAgent, DeliveryStatus, Listing, Order, SellerProfile, User
 
@@ -775,7 +775,12 @@ async def open_admin_tools(callback: CallbackQuery, state: FSMContext):
         "<code>/delete_user_67</code>\n\n"
         "Use IDs from admin lists before deleting."
     )
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "admin_stats")
@@ -785,7 +790,12 @@ async def admin_stats(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
     text = await _render_stats_text(session)
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "admin_vendors")
@@ -795,7 +805,12 @@ async def admin_vendors(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
     text = await _render_vendors_text(session)
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "admin_transactions")
@@ -805,7 +820,12 @@ async def admin_transactions(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
     text = await _render_transactions_text(session)
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "admin_listings")
@@ -815,7 +835,12 @@ async def admin_listings(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
     text = await _render_listings_text(session)
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "admin_delivery_agents")
@@ -825,7 +850,12 @@ async def admin_delivery_agents(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
     text = await _render_delivery_agents_text(session)
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "admin_delivery_agent_add")
@@ -836,7 +866,7 @@ async def admin_delivery_agent_add(callback: CallbackQuery, state: FSMContext):
     await safe_answer_callback(callback)
     await state.clear()
     await state.set_state(AdminStates.awaiting_delivery_agent_name)
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         "<b>Add Delivery Agent</b>\n\nStep 1/4\nSend the rider full name.",
         parse_mode="HTML",
@@ -998,7 +1028,12 @@ async def admin_delivery_tracking(callback: CallbackQuery, session: AsyncSession
         return
     await safe_answer_callback(callback)
     text = await _render_delivery_tracking_text(session)
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "admin_delivery_assign_picker")
@@ -1015,14 +1050,14 @@ async def admin_delivery_assign_picker(callback: CallbackQuery, session: AsyncSe
     )
     deliveries = result.scalars().all()
     if not deliveries:
-        await safe_edit_text(
+        await safe_replace_with_screen(
             callback,
             "<b>Assign Delivery</b>\n\nNo deliveries available for assignment.",
             parse_mode="HTML",
             reply_markup=_admin_tools_keyboard(),
         )
         return
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         "<b>Assign Delivery</b>\n\nSelect an order to assign or re-assign an agent.",
         parse_mode="HTML",
@@ -1339,7 +1374,12 @@ async def admin_privileges_help(callback: CallbackQuery, state: FSMContext):
         "Step 1/3\n"
         "Send the <b>Seller ID</b> (e.g. SEL-ABC12345) you want to update."
     )
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_delete_help_keyboard())
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_delete_help_keyboard(),
+    )
 
 
 @router.message(AdminStates.awaiting_privilege_seller_id)
@@ -1437,7 +1477,12 @@ async def admin_broadcast_help(callback: CallbackQuery, state: FSMContext):
         "<b>Broadcast</b>\n\n"
         "Choose an audience to continue."
     )
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_broadcast_audience_keyboard())
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_broadcast_audience_keyboard(),
+    )
 
 
 @router.callback_query(F.data.startswith("admin_broadcast_audience_"))
@@ -1451,7 +1496,7 @@ async def choose_broadcast_audience(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.update_data(broadcast_audience=audience)
     await state.set_state(AdminStates.awaiting_broadcast_message)
-    await safe_edit_text(
+    await safe_replace_with_screen(
         callback,
         f"Audience selected: <b>{audience}</b>\n\nNow send text or send a photo (caption optional).",
         parse_mode="HTML",
@@ -1531,7 +1576,12 @@ async def refresh_pending(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
     text = await _render_pending_text(session)
-    await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=_pending_keyboard())
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_pending_keyboard(),
+    )
 
 
 @router.callback_query(F.data.startswith("admin_approve_"))

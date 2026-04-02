@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from bot.helpers.brand_assets import get_category_hero, get_empty_state
-from bot.helpers.telegram import safe_answer_callback, safe_edit_text, safe_render_text_screen
+from bot.helpers.telegram import (
+    safe_answer_callback,
+    safe_edit_text,
+    safe_render_text_screen,
+    safe_replace_with_screen,
+)
 from bot.keyboards.main_menu import get_catalog_categories
 from db.models import AccessorySubcategory, Category, Listing, SellerProfile
 
@@ -166,18 +171,12 @@ async def _show_category_page(
             f"No products available in {format_category_label(category, accessory_subcategory)}.\n\n"
             "Try another category."
         )
-        if empty_image:
-            await callback.message.answer_photo(
-                photo=empty_image,
-                caption=empty_text,
-                reply_markup=get_catalog_categories(),
-            )
-        else:
-            await safe_edit_text(
-                callback,
-                empty_text,
-                reply_markup=get_catalog_categories(),
-            )
+        await safe_replace_with_screen(
+            callback,
+            empty_text,
+            photo=empty_image,
+            reply_markup=get_catalog_categories(),
+        )
         return
 
     total_pages = (len(listings) - 1) // PAGE_SIZE + 1
@@ -207,36 +206,13 @@ async def _show_category_page(
         category.name,
         accessory_subcategory.name if accessory_subcategory else None,
     )
-    # If callback came from a photo message, editing text will mutate caption on that image.
-    # Create a fresh message instead, so stale images are not reused as headers.
-    if callback.message and callback.message.photo:
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        if hero:
-            await callback.message.answer_photo(
-                photo=hero,
-                caption=control_text,
-                parse_mode="HTML",
-                reply_markup=control_keyboard,
-            )
-        else:
-            await callback.message.answer(
-                control_text,
-                parse_mode="HTML",
-                reply_markup=control_keyboard,
-            )
-    else:
-        if hero:
-            await callback.message.answer_photo(
-                photo=hero,
-                caption=control_text,
-                parse_mode="HTML",
-                reply_markup=control_keyboard,
-            )
-        else:
-            await safe_edit_text(callback, control_text, parse_mode="HTML", reply_markup=control_keyboard)
+    await safe_replace_with_screen(
+        callback,
+        control_text,
+        photo=hero,
+        parse_mode="HTML",
+        reply_markup=control_keyboard,
+    )
 
     for idx, listing in enumerate(page_items, start=start + 1):
         seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
