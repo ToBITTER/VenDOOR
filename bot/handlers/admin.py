@@ -15,6 +15,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -921,6 +922,41 @@ async def receive_delivery_agent_telegram_id(message: Message, state: FSMContext
         await message.reply("Session expired. Open /admin_tools and try again.")
         return
 
+    existing_result = await session.execute(
+        select(DeliveryAgent).where(DeliveryAgent.telegram_id == telegram_id)
+    )
+    existing_agent = existing_result.scalars().first()
+
+    if existing_agent:
+        existing_agent.name = name
+        existing_agent.phone = phone or None
+        existing_agent.vehicle_type = vehicle or None
+        existing_agent.is_active = True
+        try:
+            await session.commit()
+            await session.refresh(existing_agent)
+        except IntegrityError:
+            await session.rollback()
+            await message.reply(
+                "Could not update this rider right now due to a database conflict. Please retry."
+            )
+            return
+        await state.clear()
+        await message.reply(
+            (
+                "<b>Delivery Agent Updated</b>\n\n"
+                f"<b>ID:</b> {existing_agent.id}\n"
+                f"<b>Name:</b> {existing_agent.name}\n"
+                f"<b>Phone:</b> {existing_agent.phone or 'N/A'}\n"
+                f"<b>Vehicle:</b> {existing_agent.vehicle_type or 'N/A'}\n"
+                f"<b>Telegram ID:</b> <code>{telegram_id}</code>\n\n"
+                "This Telegram ID already existed, so the rider profile was updated."
+            ),
+            parse_mode="HTML",
+            reply_markup=_admin_tools_keyboard(),
+        )
+        return
+
     agent = DeliveryAgent(
         name=name,
         phone=phone or None,
@@ -929,8 +965,15 @@ async def receive_delivery_agent_telegram_id(message: Message, state: FSMContext
         is_active=True,
     )
     session.add(agent)
-    await session.commit()
-    await session.refresh(agent)
+    try:
+        await session.commit()
+        await session.refresh(agent)
+    except IntegrityError:
+        await session.rollback()
+        await message.reply(
+            "A rider with this Telegram ID already exists. Open Admin Tools and update the existing rider."
+        )
+        return
     await state.clear()
 
     await message.reply(
