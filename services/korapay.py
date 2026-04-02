@@ -9,11 +9,13 @@ import httpx
 import hmac
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 
 from core.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -93,7 +95,7 @@ class KorapayClient:
                         )
         
         except httpx.HTTPError as e:
-            print(f"Korapay initialization error: {e}")
+            logger.exception("Korapay initialization error")
         
         return None
     
@@ -122,11 +124,11 @@ class KorapayClient:
                     return data.get("data")
         
         except httpx.HTTPError as e:
-            print(f"Korapay verification error: {e}")
+            logger.exception("Korapay verification error")
         
         return None
     
-    def verify_webhook_signature(self, payload: dict, signature: str) -> bool:
+    def verify_webhook_signature(self, payload: dict | str | bytes, signature: str) -> bool:
         """
         Verify that a webhook came from Korapay.
         
@@ -138,18 +140,24 @@ class KorapayClient:
             True if signature is valid, False otherwise
         """
         try:
-            # Convert payload to JSON and hash with secret key
-            payload_string = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            if isinstance(payload, bytes):
+                payload_bytes = payload
+            elif isinstance(payload, str):
+                payload_bytes = payload.encode()
+            else:
+                payload_string = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+                payload_bytes = payload_string.encode()
+
             computed_signature = hmac.new(
                 self.secret_key.encode(),
-                payload_string.encode(),
+                payload_bytes,
                 hashlib.sha256
             ).hexdigest()
             
             return hmac.compare_digest(computed_signature, signature)
         
-        except Exception as e:
-            print(f"Webhook signature verification error: {e}")
+        except Exception:
+            logger.exception("Webhook signature verification error")
             return False
 
 

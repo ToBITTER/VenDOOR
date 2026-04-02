@@ -9,6 +9,7 @@ import logging
 import secrets
 import time
 import uuid
+import hmac
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -33,6 +34,7 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 UPDATE_SEMAPHORE = asyncio.Semaphore(20)
 BROADCAST_SEMAPHORE = asyncio.Semaphore(20)
+TELEGRAM_SECRET_HEADER = "x-telegram-bot-api-secret-token"
 
 
 class BroadcastRequest(BaseModel):
@@ -116,7 +118,11 @@ async def _configure_bot(bot: Bot) -> None:
     webhook_url = settings.bot_webhook_url or f"{settings.api_host.rstrip('/')}/webhooks/telegram"
     try:
         await set_default_commands(bot)
-        await bot.set_webhook(webhook_url, drop_pending_updates=True)
+        await bot.set_webhook(
+            webhook_url,
+            drop_pending_updates=True,
+            secret_token=settings.telegram_webhook_secret,
+        )
         logger.info("Telegram webhook configured: %s", webhook_url)
         
         # Initialize notification service with bot instance
@@ -164,8 +170,8 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_hosts_list if settings.allowed_hosts_list else ["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_allow_origins,
+    allow_credentials="*" not in settings.cors_allow_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -228,7 +234,7 @@ async def root():
 # ============================================================================
 
 @app.post("/webhooks/korapay")
-async def korapay_webhook_handler(request: dict, session: AsyncSession = Depends(get_session)):
+async def korapay_webhook_handler(request: Request, session: AsyncSession = Depends(get_session)):
     """
     Korapay payment gateway webhook handler.
     Called by Korapay when payment status changes.
@@ -244,7 +250,26 @@ async def korapay_webhook_handler(request: dict, session: AsyncSession = Depends
         }
     }
     """
-    return await korapay_webhook.handle_korapay_webhook(request, session, app.state.bot)
+    try:
+        payload_bytes = await request.body()
+        payload = await request.json()
+    except Exception:
+        logger.exception("Invalid Korapay webhook payload")
+        raise HTTPException(status_code=400, detail="Invalid webhook payload")
+
+    if settings.korapay_webhook_secret:
+        signature = request.headers.get("x-korapay-signature")
+        if not signature:
+            raise HTTPException(status_code=401, detail="Missing Korapay signature")
+        computed = hmac.new(
+            settings.korapay_webhook_secret.encode("utf-8"),
+            payload_bytes,
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(computed, signature):
+            raise HTTPException(status_code=401, detail="Invalid Korapay signature")
+
+    return await korapay_webhook.handle_korapay_webhook(payload, session, app.state.bot)
 
 
 @app.get("/webhooks/telegram")
@@ -265,6 +290,14 @@ async def telegram_webhook_handler(request: Request):
     """
     bot: Bot = app.state.bot
     dispatcher: Dispatcher = app.state.dispatcher
+    if settings.telegram_webhook_secret:
+        received_secret = request.headers.get(TELEGRAM_SECRET_HEADER)
+        if not received_secret or not hmac.compare_digest(
+            received_secret,
+            settings.telegram_webhook_secret,
+        ):
+            logger.warning("Rejected Telegram webhook: invalid secret token")
+            raise HTTPException(status_code=401, detail="Invalid Telegram webhook token")
 
     try:
         update_data = await request.json()
