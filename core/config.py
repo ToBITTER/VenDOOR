@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # Korapay API
     korapay_public_key: str
     korapay_secret_key: str
+    korapay_encryption_key: str | None = None
     korapay_base_url: str = "https://api.korapay.com/merchant/api/v1"
 
     # Celery & Message Queue
@@ -58,6 +59,7 @@ class Settings(BaseSettings):
         "bot_webhook_url",
         "admin_telegram_id",
         "admin_api_key",
+        "korapay_encryption_key",
         "telegram_webhook_secret",
         "korapay_webhook_secret",
         mode="before",

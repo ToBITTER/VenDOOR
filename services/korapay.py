@@ -10,7 +10,10 @@ import hmac
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from core.config import get_settings
 
@@ -35,10 +38,53 @@ class KorapayClient:
         self.base_url = settings.korapay_base_url
         self.public_key = settings.korapay_public_key
         self.secret_key = settings.korapay_secret_key
+        self.encryption_key = settings.korapay_encryption_key
         self.headers = {
             "Authorization": f"Bearer {self.secret_key}",
             "Content-Type": "application/json",
         }
+
+    @staticmethod
+    def _is_success_status(value) -> bool:
+        if value is True:
+            return True
+        if isinstance(value, str):
+            return value.lower() == "success"
+        return False
+
+    def _resolve_encryption_key(self) -> bytes:
+        key = (self.encryption_key or "").strip()
+        if not key:
+            raise ValueError("Korapay encryption key is not configured")
+
+        if key.startswith("0x"):
+            key = key[2:]
+
+        # Accept both plain-text 32-char keys and hex-encoded 32-byte keys.
+        try:
+            maybe_hex = bytes.fromhex(key)
+            if len(maybe_hex) == 32:
+                return maybe_hex
+        except ValueError:
+            pass
+
+        raw = key.encode("utf-8")
+        if len(raw) != 32:
+            raise ValueError("Korapay encryption key must be 32 bytes for AES-256-GCM")
+        return raw
+
+    def encrypt_payload(self, payload: dict) -> str:
+        """
+        Encrypt payload for Korapay endpoints that accept encrypted request bodies.
+        Output format: iv:ciphertext:auth_tag (all hex encoded).
+        """
+        key = self._resolve_encryption_key()
+        iv = os.urandom(16)
+        aesgcm = AESGCM(key)
+        plaintext = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        encrypted = aesgcm.encrypt(iv, plaintext, None)
+        ciphertext, tag = encrypted[:-16], encrypted[-16:]
+        return f"{iv.hex()}:{ciphertext.hex()}:{tag.hex()}"
     
     async def initialize_charge(
         self,
@@ -75,17 +121,39 @@ class KorapayClient:
         
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.base_url}/charges/initialize",
-                    json=payload,
-                    headers=self.headers,
-                    timeout=10.0,
-                )
-                response.raise_for_status()
-                
-                data = response.json()
-                
-                if data.get("status") == "success":
+                data = None
+
+                # Attempt encrypted payload first when key is configured.
+                if self.encryption_key:
+                    try:
+                        encrypted_payload = self.encrypt_payload(payload)
+                        encrypted_response = await client.post(
+                            f"{self.base_url}/charges/initialize",
+                            json={"encrypted_data": encrypted_payload},
+                            headers=self.headers,
+                            timeout=10.0,
+                        )
+                        if encrypted_response.is_success:
+                            data = encrypted_response.json()
+                        else:
+                            logger.warning(
+                                "Korapay encrypted initialize failed with status %s; falling back to standard payload",
+                                encrypted_response.status_code,
+                            )
+                    except Exception:
+                        logger.exception("Failed encrypted Korapay initialize; falling back to standard payload")
+
+                if data is None:
+                    response = await client.post(
+                        f"{self.base_url}/charges/initialize",
+                        json=payload,
+                        headers=self.headers,
+                        timeout=10.0,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+
+                if self._is_success_status(data.get("status")):
                     checkout_link = data.get("data", {}).get("checkout_url")
                     if checkout_link:
                         return KorapayReference(
@@ -120,7 +188,7 @@ class KorapayClient:
                 
                 data = response.json()
                 
-                if data.get("status") == "success":
+                if self._is_success_status(data.get("status")):
                     return data.get("data")
         
         except httpx.HTTPError as e:

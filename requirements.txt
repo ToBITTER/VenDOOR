@@ -12,6 +12,7 @@ alembic==1.13.1
 asyncpg==0.29.0
 
 httpx==0.25.2
+cryptography==44.0.1
 
 celery==5.3.4
 redis==5.0.1
