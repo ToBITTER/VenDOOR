@@ -33,6 +33,13 @@ class KorapayClient:
     """
     Korapay API client for initiating and verifying payments.
     """
+    ALLOWED_CHANNELS = {
+        "card",
+        "bank_transfer",
+        "pay_with_bank",
+        "mobile_money",
+        "voucher",
+    }
     
     def __init__(self):
         self.base_url = settings.korapay_base_url
@@ -253,10 +260,3 @@ def get_korapay_client() -> KorapayClient:
     if _korapay_client is None:
         _korapay_client = KorapayClient()
     return _korapay_client
-    ALLOWED_CHANNELS = {
-        "card",
-        "bank_transfer",
-        "pay_with_bank",
-        "mobile_money",
-        "voucher",
-    }
