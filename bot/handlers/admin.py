@@ -191,11 +191,12 @@ async def _render_pending_text(session: AsyncSession) -> str:
     text = "<b>Pending Seller Verifications</b>\n\n"
     for seller in pending[:10]:
         user = seller.user
-        name = f"{user.first_name} {user.last_name or ''}".strip() if user else "Unknown"
+        name = seller.full_name or (f"{user.first_name} {user.last_name or ''}".strip() if user else "Unknown")
         username = f"@{user.username}" if user and user.username else "N/A"
         text += (
             f"<b>Seller ID:</b> {seller.seller_code}\n"
             f"<b>Name:</b> {name}\n"
+            f"<b>Level:</b> {seller.level or 'N/A'}\n"
             f"<b>Username:</b> {username}\n"
         )
         text += (
@@ -540,12 +541,13 @@ async def review_seller(message: Message, session: AsyncSession):
         return
 
     user = seller.user
-    name = f"{user.first_name} {user.last_name or ''}".strip() if user else "Unknown"
+    name = seller.full_name or (f"{user.first_name} {user.last_name or ''}".strip() if user else "Unknown")
     username = f"@{user.username}" if user and user.username else "N/A"
     text = (
         "<b>Seller Verification Review</b>\n\n"
         f"<b>Seller ID:</b> {seller.seller_code}\n"
         f"<b>Name:</b> {name}\n"
+        f"<b>Level:</b> {seller.level or 'N/A'}\n"
         f"<b>Username:</b> {username}\n"
         f"<b>Student:</b> {'Yes' if seller.is_student else 'No'}\n"
         f"<b>Featured Vendor:</b> {'Yes' if seller.is_featured else 'No'}\n"
@@ -559,6 +561,18 @@ async def review_seller(message: Message, session: AsyncSession):
         f"<b>Account Name:</b> {seller.account_name}\n"
         f"<b>ID Document File:</b> {seller.id_document_url or 'N/A'}"
     )
+    if seller.id_document_url:
+        try:
+            await message.answer_photo(
+                photo=seller.id_document_url,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=_actions_keyboard(seller.id),
+            )
+            return
+        except Exception:
+            pass
+
     await message.answer(text, parse_mode="HTML", reply_markup=_actions_keyboard(seller.id))
 
 

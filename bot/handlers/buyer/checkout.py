@@ -4,6 +4,7 @@ Collects delivery details and initiates payment.
 """
 
 from datetime import datetime
+import re
 
 from aiogram import F, Router
 from aiogram.filters import StateFilter
@@ -29,6 +30,24 @@ class CheckoutStates(StatesGroup):
     awaiting_delivery_address = State()
     awaiting_delivery_details = State()
     confirming_order = State()
+
+
+ADDRESS_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\s\-\/]{1,30}\s+[A-Za-z]\d{1,4}$")
+
+
+def _parse_delivery_identity(raw_text: str) -> tuple[str, str] | None:
+    text = raw_text.strip()
+    if "|" in text:
+        name, location = [part.strip() for part in text.split("|", 1)]
+    elif "," in text:
+        name, location = [part.strip() for part in text.split(",", 1)]
+    else:
+        return None
+    if len(name) < 3:
+        return None
+    if not ADDRESS_PATTERN.match(location):
+        return None
+    return name, location
 
 
 def _resolve_customer_email(user: User, buyer_telegram_id: str) -> str:
@@ -77,7 +96,8 @@ async def start_checkout(callback: CallbackQuery, state: FSMContext, session: As
             f"Total: NGN {total_amount:,.2f}\n\n"
             "<b>Escrow Protection</b>\n"
             "Your payment is safe. Seller gets paid only after delivery confirmation window.\n\n"
-            "What is your delivery address?"
+            "Send delivery details in this format:\n"
+            "<code>Full Name | HALL A123</code>"
         )
         await state.update_data(checkout_mode="cart")
     else:
@@ -99,7 +119,8 @@ async def start_checkout(callback: CallbackQuery, state: FSMContext, session: As
             "(Includes 5% platform fee)\n\n"
             "<b>Escrow Protection</b>\n"
             "Your payment is safe. Seller gets paid only after you confirm receipt.\n\n"
-            "What is your delivery address?"
+            "Send delivery details in this format:\n"
+            "<code>Full Name | HALL A123</code>"
         )
         await state.update_data(checkout_mode="single")
 
@@ -117,13 +138,17 @@ async def start_checkout(callback: CallbackQuery, state: FSMContext, session: As
 
 @router.message(CheckoutStates.awaiting_delivery_address)
 async def handle_delivery_address(message: Message, state: FSMContext):
-    address = (message.text or "").strip()
-
-    if len(address) < 10:
-        await message.reply("Please provide a full delivery address.")
+    parsed = _parse_delivery_identity(message.text or "")
+    if not parsed:
+        await message.reply("Use this format: Full Name | HALL A123")
         return
 
-    await state.update_data(delivery_address=address)
+    full_name, hall_room = parsed
+    await state.update_data(
+        delivery_contact_name=full_name,
+        delivery_hall_room=hall_room,
+        delivery_address=f"Name: {full_name}\nLocation: {hall_room}",
+    )
 
     await message.answer(
         "<b>Delivery Details</b>\n\n"

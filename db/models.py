@@ -133,6 +133,8 @@ class SellerProfile(Base):
     seller_code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True, default=generate_seller_code)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, nullable=False, index=True)
     is_student: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    level: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     student_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     hall: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     room_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)

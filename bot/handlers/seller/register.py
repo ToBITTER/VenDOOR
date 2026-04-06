@@ -21,6 +21,8 @@ settings = get_settings()
 
 
 class SellerRegistrationStates(StatesGroup):
+    awaiting_full_name = State()
+    awaiting_level = State()
     awaiting_student_choice = State()
     awaiting_student_email = State()
     awaiting_hall = State()
@@ -56,10 +58,40 @@ async def start_seller_registration(callback: CallbackQuery, state: FSMContext, 
 
     text = (
         "<b>Seller Registration</b>\n\n"
+        "Send your full name as it appears on your ID card."
+    )
+    await safe_replace_with_screen(callback, text, parse_mode="HTML")
+    await state.set_state(SellerRegistrationStates.awaiting_full_name)
+
+
+@router.message(SellerRegistrationStates.awaiting_full_name)
+async def handle_full_name(message: Message, state: FSMContext):
+    full_name = (message.text or "").strip()
+    if len(full_name.split()) < 2:
+        await message.reply("Please enter your full name (first and last name).")
+        return
+    await state.update_data(full_name=full_name)
+    await message.answer(
+        "<b>Level</b>\n\nSend your level (e.g. 100L, 200L, 300L).\n"
+        "If not a student, send <code>N/A</code>.",
+        parse_mode="HTML",
+    )
+    await state.set_state(SellerRegistrationStates.awaiting_level)
+
+
+@router.message(SellerRegistrationStates.awaiting_level)
+async def handle_level(message: Message, state: FSMContext):
+    level = (message.text or "").strip().upper()
+    if not level:
+        await message.reply("Please enter your level or N/A.")
+        return
+    await state.update_data(level=level)
+
+    text = (
+        "<b>Seller Registration</b>\n\n"
         "Are you a university student?\n\n"
         "Student sellers get priority visibility and lower fees."
     )
-
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Yes, I am a student", callback_data="seller_student_yes")],
@@ -67,8 +99,7 @@ async def start_seller_registration(callback: CallbackQuery, state: FSMContext, 
             [InlineKeyboardButton(text="Cancel", callback_data="back_to_menu")],
         ]
     )
-
-    await safe_replace_with_screen(callback, text, parse_mode="HTML", reply_markup=keyboard)
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(SellerRegistrationStates.awaiting_student_choice)
 
 
@@ -240,6 +271,8 @@ async def handle_account_name(message: Message, state: FSMContext):
     is_student = data.get("is_student", False)
     confirmation_text = (
         "<b>Confirm Your Details</b>\n\n"
+        f"<b>Full Name:</b> {data.get('full_name')}\n"
+        f"<b>Level:</b> {data.get('level')}\n"
         f"<b>Type:</b> {'Student' if is_student else 'Non-Student'}\n"
     )
 
@@ -280,6 +313,8 @@ async def confirm_seller_registration(callback: CallbackQuery, state: FSMContext
         seller = SellerProfile(
             user_id=user.id,
             is_student=data.get("is_student", False),
+            full_name=data.get("full_name"),
+            level=data.get("level"),
             student_email=data.get("student_email"),
             hall=data.get("hall"),
             room_number=data.get("room_number"),
