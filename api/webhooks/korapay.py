@@ -4,18 +4,60 @@ Processes payment confirmations and updates order statuses in the database.
 """
 
 from datetime import datetime
+import hashlib
+import json
 import logging
 from aiogram import Bot
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from db.models import Delivery, DeliveryEvent, DeliveryEventType, DeliveryStatus, Listing, Order, OrderStatus, SellerProfile
+from db.models import (
+    Delivery,
+    DeliveryEvent,
+    DeliveryEventType,
+    DeliveryStatus,
+    Listing,
+    Order,
+    OrderStatus,
+    SellerProfile,
+    WebhookReceipt,
+)
 from services.korapay import get_korapay_client
 from core.config import get_settings
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+async def _create_webhook_receipt(
+    session: AsyncSession,
+    provider: str,
+    event_type: str | None,
+    reference: str | None,
+    payload: dict,
+) -> bool:
+    """
+    Returns True when this webhook payload is new, False when already processed.
+    """
+    payload_hash = hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    session.add(
+        WebhookReceipt(
+            provider=provider,
+            event_type=event_type,
+            reference=reference,
+            payload_hash=payload_hash,
+        )
+    )
+    try:
+        await session.flush()
+        return True
+    except IntegrityError:
+        await session.rollback()
+        return False
 
 
 async def handle_korapay_webhook(
@@ -49,6 +91,17 @@ async def handle_korapay_webhook(
         data = webhook_data.get("data", {})
         reference = data.get("ref")
         status = data.get("status")
+
+        # Idempotency guard: ignore duplicate webhook events for same event/reference.
+        is_new = await _create_webhook_receipt(
+            session=session,
+            provider="KORAPAY",
+            event_type=event,
+            reference=reference,
+            payload=webhook_data,
+        )
+        if not is_new:
+            return {"status": "ignored", "event": event, "reason": "duplicate_webhook"}
         
         # Verify webhook signature (optional but recommended)
         # korapay_client = get_korapay_client()

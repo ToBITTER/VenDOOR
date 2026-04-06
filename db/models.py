@@ -460,3 +460,21 @@ class DeliveryEvent(Base):
     __table_args__ = (
         Index("ix_delivery_events_delivery_id_created_at", "delivery_id", "created_at"),
     )
+
+
+class WebhookReceipt(Base):
+    """Idempotency receipt for inbound webhooks."""
+
+    __tablename__ = "webhook_receipts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    event_type: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("provider", "event_type", "reference", name="uq_webhook_receipt_provider_event_reference"),
+        Index("ix_webhook_receipts_created_at", "created_at"),
+    )
