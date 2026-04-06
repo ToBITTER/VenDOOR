@@ -136,9 +136,11 @@ class KorapayClient:
                         if encrypted_response.is_success:
                             data = encrypted_response.json()
                         else:
+                            details = encrypted_response.text[:800]
                             logger.warning(
-                                "Korapay encrypted initialize failed with status %s; falling back to standard payload",
+                                "Korapay encrypted initialize failed with status %s; response=%s. Falling back to standard payload",
                                 encrypted_response.status_code,
+                                details,
                             )
                     except Exception:
                         logger.exception("Failed encrypted Korapay initialize; falling back to standard payload")
@@ -150,6 +152,12 @@ class KorapayClient:
                         headers=self.headers,
                         timeout=10.0,
                     )
+                    if not response.is_success:
+                        logger.error(
+                            "Korapay initialize failed status=%s response=%s",
+                            response.status_code,
+                            response.text[:1200],
+                        )
                     response.raise_for_status()
                     data = response.json()
 

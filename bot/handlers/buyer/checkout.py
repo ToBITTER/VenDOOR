@@ -10,7 +10,7 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -29,6 +29,41 @@ class CheckoutStates(StatesGroup):
     awaiting_delivery_address = State()
     awaiting_delivery_details = State()
     confirming_order = State()
+
+
+def _resolve_customer_email(user: User, buyer_telegram_id: str) -> str:
+    """
+    Korapay requires a syntactically valid email.
+    Telegram usernames are not emails, so never pass them directly.
+    """
+    if user.username and "@" in user.username:
+        return user.username.strip().lower()
+    return f"user_{buyer_telegram_id}@vendoor.app"
+
+
+async def _available_quantity_for_buyer(
+    session: AsyncSession,
+    listing_id: int,
+    buyer_id: int,
+) -> int:
+    listing_qty_result = await session.execute(select(Listing.quantity).where(Listing.id == listing_id))
+    listing_quantity = int(listing_qty_result.scalar() or 0)
+
+    reserved_cart_result = await session.execute(
+        select(func.coalesce(func.sum(CartItem.quantity), 0))
+        .where(CartItem.listing_id == listing_id)
+        .where(CartItem.buyer_id != buyer_id)
+    )
+    reserved_cart = int(reserved_cart_result.scalar() or 0)
+
+    reserved_pending_result = await session.execute(
+        select(func.coalesce(func.sum(Order.quantity), 0))
+        .where(Order.listing_id == listing_id)
+        .where(Order.buyer_id != buyer_id)
+        .where(Order.status == OrderStatus.PENDING)
+    )
+    reserved_pending = int(reserved_pending_result.scalar() or 0)
+    return max(0, listing_quantity - reserved_cart - reserved_pending)
 
 
 async def start_checkout(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
@@ -251,7 +286,18 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
             payment_links: list[tuple[int, str, str]] = []
             for item in cart_items:
                 listing = await session.get(Listing, item.listing_id, with_for_update=True)
-                if not listing or not listing.available or listing.quantity < item.quantity:
+                if not listing or not listing.available:
+                    await session.rollback()
+                    await safe_edit_text(
+                        callback,
+                        f"Stock changed for {item.listing.title if item.listing else 'an item'}. Please review cart.",
+                        reply_markup=get_main_menu_inline(),
+                    )
+                    await state.clear()
+                    return
+
+                available_for_buyer = await _available_quantity_for_buyer(session, listing.id, buyer.id)
+                if item.quantity > available_for_buyer:
                     await session.rollback()
                     await safe_edit_text(
                         callback,
@@ -279,7 +325,7 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
                 korapay_ref = await korapay.initialize_charge(
                     amount=order.amount,
                     reference=reference,
-                    customer_email=buyer.username or f"user_{buyer_telegram_id}@vendoor.local",
+                    customer_email=_resolve_customer_email(buyer, buyer_telegram_id),
                     customer_name=buyer.first_name,
                     callback_url=f"{settings.api_host}/webhooks/korapay",
                 )
@@ -323,10 +369,19 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
             listing_id = data.get("listing_id")
             result = await session.execute(select(Listing).where(Listing.id == listing_id).with_for_update())
             listing = result.scalars().first()
-            if not listing or not listing.available or listing.quantity <= 0:
+            if not listing or not listing.available:
                 await safe_edit_text(
                     callback,
                     "This item is out of stock now. Please choose another listing.",
+                    reply_markup=get_main_menu_inline(),
+                )
+                await state.clear()
+                return
+            available_for_buyer = await _available_quantity_for_buyer(session, listing.id, buyer.id)
+            if available_for_buyer < 1:
+                await safe_edit_text(
+                    callback,
+                    "This item is currently reserved in another active cart/payment.",
                     reply_markup=get_main_menu_inline(),
                 )
                 await state.clear()
@@ -372,7 +427,7 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
             korapay_ref = await korapay.initialize_charge(
                 amount=order.amount,
                 reference=reference,
-                customer_email=buyer.username or f"user_{buyer_telegram_id}@vendoor.local",
+                customer_email=_resolve_customer_email(buyer, buyer_telegram_id),
                 customer_name=buyer.first_name,
                 callback_url=f"{settings.api_host}/webhooks/korapay",
             )

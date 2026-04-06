@@ -7,13 +7,13 @@ from decimal import Decimal
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline
-from db.models import CartItem, Listing, User
+from db.models import CartItem, Listing, Order, OrderStatus, User
 
 router = Router()
 
@@ -35,6 +35,42 @@ def _cart_actions_keyboard(cart_item_ids: list[int]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _post_add_to_cart_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")],
+            [InlineKeyboardButton(text="View Cart", callback_data="my_cart")],
+            [InlineKeyboardButton(text="Continue Shopping", callback_data="browse_catalog")],
+        ]
+    )
+
+
+async def _available_quantity_for_buyer(
+    session: AsyncSession,
+    listing_id: int,
+    buyer_id: int,
+) -> int:
+    listing_result = await session.execute(select(Listing.quantity).where(Listing.id == listing_id))
+    listing_quantity = int(listing_result.scalar() or 0)
+
+    reserved_cart_result = await session.execute(
+        select(func.coalesce(func.sum(CartItem.quantity), 0))
+        .where(CartItem.listing_id == listing_id)
+        .where(CartItem.buyer_id != buyer_id)
+    )
+    reserved_cart = int(reserved_cart_result.scalar() or 0)
+
+    reserved_pending_result = await session.execute(
+        select(func.coalesce(func.sum(Order.quantity), 0))
+        .where(Order.listing_id == listing_id)
+        .where(Order.buyer_id != buyer_id)
+        .where(Order.status == OrderStatus.PENDING)
+    )
+    reserved_pending = int(reserved_pending_result.scalar() or 0)
+
+    return max(0, listing_quantity - reserved_cart - reserved_pending)
+
+
 @router.callback_query(F.data.startswith("add_to_cart_"))
 async def add_to_cart(callback: CallbackQuery, session: AsyncSession):
     listing_id = _callback_int_suffix(callback.data, "add_to_cart_")
@@ -50,7 +86,7 @@ async def add_to_cart(callback: CallbackQuery, session: AsyncSession):
 
     listing_result = await session.execute(select(Listing).where(Listing.id == listing_id))
     listing = listing_result.scalars().first()
-    if not listing or not listing.available or listing.quantity <= 0:
+    if not listing or not listing.available:
         await safe_answer_callback(callback, text="This item is out of stock.", show_alert=True)
         return
 
@@ -61,9 +97,22 @@ async def add_to_cart(callback: CallbackQuery, session: AsyncSession):
     )
     cart_item = cart_result.scalars().first()
 
+    available_for_buyer = await _available_quantity_for_buyer(session, listing.id, buyer.id)
+    if available_for_buyer <= 0 and not cart_item:
+        await safe_answer_callback(
+            callback,
+            text="This item is currently reserved in another active cart/payment.",
+            show_alert=True,
+        )
+        return
+
     if cart_item:
-        if cart_item.quantity >= listing.quantity:
-            await safe_answer_callback(callback, text="No more stock available for this item.", show_alert=True)
+        if cart_item.quantity >= available_for_buyer:
+            await safe_answer_callback(
+                callback,
+                text="You already hold the last available unit. Proceed to checkout.",
+                show_alert=True,
+            )
             return
         cart_item.quantity += 1
     else:
@@ -72,6 +121,11 @@ async def add_to_cart(callback: CallbackQuery, session: AsyncSession):
 
     await session.commit()
     await safe_answer_callback(callback, text="Added to cart.")
+    if callback.message:
+        await callback.message.answer(
+            "Item added to cart. What would you like to do next?",
+            reply_markup=_post_add_to_cart_keyboard(),
+        )
 
 
 @router.callback_query(F.data == "my_cart")
