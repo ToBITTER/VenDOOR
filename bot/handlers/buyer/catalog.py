@@ -68,7 +68,6 @@ async def _fetch_category_listings(
         .options(joinedload(Listing.seller).joinedload(SellerProfile.user))
         .where(Listing.category == category)
         .where(Listing.available == True)
-        .where(Listing.quantity > 0)
         .order_by(
             SellerProfile.is_featured.desc(),
             SellerProfile.priority_score.desc(),
@@ -116,6 +115,13 @@ def _build_category_page_keyboard(
 
 
 def _build_listing_card_keyboard(listing: Listing) -> InlineKeyboardMarkup:
+    if listing.quantity <= 0 or not listing.available:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Out of Stock", callback_data="stock_unavailable")],
+                [InlineKeyboardButton(text="Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
+            ]
+        )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Add to Cart", callback_data=f"add_to_cart_{listing.id}")],
@@ -218,7 +224,7 @@ async def _show_category_page(
             f"{listing.description}\n\n"
             f"Category: {format_category_label(category, listing.accessory_subcategory)}\n"
             f"Price: NGN {listing.buyer_price:,.2f}\n"
-            f"Quantity Left: {listing.quantity}\n"
+            f"Stock: {'Out of Stock' if listing.quantity <= 0 or not listing.available else f'{listing.quantity} left'}\n"
             f"Seller: {seller_name}"
         )
         await _send_listing_card(callback, listing, card_text)
@@ -347,3 +353,8 @@ async def view_seller_profile(callback: CallbackQuery, session: AsyncSession):
         inline_keyboard=[[InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")]]
     )
     await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "stock_unavailable")
+async def stock_unavailable(callback: CallbackQuery):
+    await safe_answer_callback(callback, text="This item is out of stock.", show_alert=True)

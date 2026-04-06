@@ -4,6 +4,7 @@ Collects delivery details and initiates payment.
 """
 
 from datetime import datetime
+from datetime import timedelta
 
 from aiogram import F, Router
 from aiogram.filters import StateFilter
@@ -23,6 +24,7 @@ from services.korapay import get_korapay_client
 
 router = Router()
 settings = get_settings()
+CART_RESERVATION_MINUTES = 10
 
 
 class CheckoutStates(StatesGroup):
@@ -46,6 +48,7 @@ async def _available_quantity_for_buyer(
     listing_id: int,
     buyer_id: int,
 ) -> int:
+    reservation_cutoff = datetime.utcnow() - timedelta(minutes=CART_RESERVATION_MINUTES)
     listing_qty_result = await session.execute(select(Listing.quantity).where(Listing.id == listing_id))
     listing_quantity = int(listing_qty_result.scalar() or 0)
 
@@ -53,6 +56,7 @@ async def _available_quantity_for_buyer(
         select(func.coalesce(func.sum(CartItem.quantity), 0))
         .where(CartItem.listing_id == listing_id)
         .where(CartItem.buyer_id != buyer_id)
+        .where(CartItem.created_at >= reservation_cutoff)
     )
     reserved_cart = int(reserved_cart_result.scalar() or 0)
 
@@ -381,7 +385,7 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
             if available_for_buyer < 1:
                 await safe_edit_text(
                     callback,
-                    "This item is currently reserved in another active cart/payment.",
+                    f"This item is currently reserved in another active cart. Try after {CART_RESERVATION_MINUTES} mins.",
                     reply_markup=get_main_menu_inline(),
                 )
                 await state.clear()

@@ -115,51 +115,26 @@ class KorapayClient:
                 "name": customer_name,
             },
             "notification_url": callback_url,  # Webhook for payment status
-            "return_url": callback_url,        # Redirect after payment
             "currency": "NGN",
         }
         
         try:
             async with httpx.AsyncClient() as client:
-                data = None
-
-                # Attempt encrypted payload first when key is configured.
-                if self.encryption_key:
-                    try:
-                        encrypted_payload = self.encrypt_payload(payload)
-                        encrypted_response = await client.post(
-                            f"{self.base_url}/charges/initialize",
-                            json={"encrypted_data": encrypted_payload},
-                            headers=self.headers,
-                            timeout=10.0,
-                        )
-                        if encrypted_response.is_success:
-                            data = encrypted_response.json()
-                        else:
-                            details = encrypted_response.text[:800]
-                            logger.warning(
-                                "Korapay encrypted initialize failed with status %s; response=%s. Falling back to standard payload",
-                                encrypted_response.status_code,
-                                details,
-                            )
-                    except Exception:
-                        logger.exception("Failed encrypted Korapay initialize; falling back to standard payload")
-
-                if data is None:
-                    response = await client.post(
-                        f"{self.base_url}/charges/initialize",
-                        json=payload,
-                        headers=self.headers,
-                        timeout=10.0,
+                response = await client.post(
+                    f"{self.base_url}/charges/initialize",
+                    json=payload,
+                    headers=self.headers,
+                    timeout=10.0,
+                )
+                if not response.is_success:
+                    logger.error(
+                        "Korapay initialize failed status=%s response=%s payload_keys=%s",
+                        response.status_code,
+                        response.text[:1200],
+                        list(payload.keys()),
                     )
-                    if not response.is_success:
-                        logger.error(
-                            "Korapay initialize failed status=%s response=%s",
-                            response.status_code,
-                            response.text[:1200],
-                        )
-                    response.raise_for_status()
-                    data = response.json()
+                response.raise_for_status()
+                data = response.json()
 
                 if self._is_success_status(data.get("status")):
                     checkout_link = data.get("data", {}).get("checkout_url")

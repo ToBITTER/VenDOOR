@@ -2,6 +2,7 @@
 Buyer cart handler - add/remove cart items and trigger cart checkout.
 """
 
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from aiogram import F, Router
@@ -16,6 +17,7 @@ from bot.keyboards.main_menu import get_main_menu_inline
 from db.models import CartItem, Listing, Order, OrderStatus, User
 
 router = Router()
+CART_RESERVATION_MINUTES = 10
 
 
 def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
@@ -50,6 +52,7 @@ async def _available_quantity_for_buyer(
     listing_id: int,
     buyer_id: int,
 ) -> int:
+    reservation_cutoff = datetime.utcnow() - timedelta(minutes=CART_RESERVATION_MINUTES)
     listing_result = await session.execute(select(Listing.quantity).where(Listing.id == listing_id))
     listing_quantity = int(listing_result.scalar() or 0)
 
@@ -57,6 +60,7 @@ async def _available_quantity_for_buyer(
         select(func.coalesce(func.sum(CartItem.quantity), 0))
         .where(CartItem.listing_id == listing_id)
         .where(CartItem.buyer_id != buyer_id)
+        .where(CartItem.created_at >= reservation_cutoff)
     )
     reserved_cart = int(reserved_cart_result.scalar() or 0)
 
@@ -101,7 +105,7 @@ async def add_to_cart(callback: CallbackQuery, session: AsyncSession):
     if available_for_buyer <= 0 and not cart_item:
         await safe_answer_callback(
             callback,
-            text="This item is currently reserved in another active cart/payment.",
+            text=f"This item is currently reserved in another active cart. Try after {CART_RESERVATION_MINUTES} mins.",
             show_alert=True,
         )
         return
