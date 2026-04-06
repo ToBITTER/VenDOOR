@@ -91,7 +91,28 @@ class KorapayClient:
         raw = (self.payment_channels or "").strip()
         if not raw:
             return []
-        return [channel.strip() for channel in raw.split(",") if channel.strip()]
+        seen: set[str] = set()
+        valid: list[str] = []
+        invalid: list[str] = []
+
+        for channel in (part.strip().lower() for part in raw.split(",")):
+            if not channel:
+                continue
+            if channel in seen:
+                continue
+            seen.add(channel)
+            if channel in self.ALLOWED_CHANNELS:
+                valid.append(channel)
+            else:
+                invalid.append(channel)
+
+        if invalid:
+            logger.warning(
+                "Ignoring invalid Korapay payment channels: %s. Allowed: %s",
+                ",".join(invalid),
+                ",".join(sorted(self.ALLOWED_CHANNELS)),
+            )
+        return valid
     
     async def initialize_charge(
         self,
@@ -232,3 +253,10 @@ def get_korapay_client() -> KorapayClient:
     if _korapay_client is None:
         _korapay_client = KorapayClient()
     return _korapay_client
+    ALLOWED_CHANNELS = {
+        "card",
+        "bank_transfer",
+        "pay_with_bank",
+        "mobile_money",
+        "voucher",
+    }
