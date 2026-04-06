@@ -271,7 +271,8 @@ async def korapay_webhook_handler(request: Request, session: AsyncSession = Depe
     }
     """
     try:
-        payload = await request.json()
+        raw_body = await request.body()
+        payload = json.loads(raw_body.decode("utf-8"))
     except Exception:
         logger.exception("Invalid Korapay webhook payload")
         raise HTTPException(status_code=400, detail="Invalid webhook payload")
@@ -280,10 +281,20 @@ async def korapay_webhook_handler(request: Request, session: AsyncSession = Depe
         signature = request.headers.get("x-korapay-signature")
         if not signature:
             raise HTTPException(status_code=401, detail="Missing Korapay signature")
+        normalized_signature = signature.strip()
+        if normalized_signature.lower().startswith("sha256="):
+            normalized_signature = normalized_signature.split("=", 1)[1].strip()
 
         # Korapay signs ONLY the "data" object with HMAC SHA256 using your secret key.
+        # Different providers may preserve key order / spacing differently, so we validate
+        # against a few safe serializations of the same object.
         signed_data = payload.get("data", {})
-        serialized_data = json.dumps(signed_data, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        serialized_candidates = [
+            json.dumps(signed_data, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
+            json.dumps(signed_data, ensure_ascii=False).encode("utf-8"),
+            json.dumps(signed_data, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode("utf-8"),
+            raw_body,
+        ]
 
         candidate_keys = []
         if settings.korapay_webhook_secret:
@@ -293,9 +304,12 @@ async def korapay_webhook_handler(request: Request, session: AsyncSession = Depe
 
         is_valid = False
         for key in candidate_keys:
-            computed = hmac.new(key.encode("utf-8"), serialized_data, hashlib.sha256).hexdigest()
-            if hmac.compare_digest(computed, signature):
-                is_valid = True
+            for serialized_data in serialized_candidates:
+                computed = hmac.new(key.encode("utf-8"), serialized_data, hashlib.sha256).hexdigest()
+                if hmac.compare_digest(computed, normalized_signature):
+                    is_valid = True
+                    break
+            if is_valid:
                 break
 
         if not is_valid:

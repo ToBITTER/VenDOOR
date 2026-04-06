@@ -240,16 +240,21 @@ class KorapayClient:
             else:
                 signed_obj = {}
 
-            payload_string = json.dumps(signed_obj, separators=(",", ":"), sort_keys=True)
-            payload_bytes = payload_string.encode()
+            serialized_candidates = [
+                json.dumps(signed_obj, separators=(",", ":"), ensure_ascii=False).encode(),
+                json.dumps(signed_obj, ensure_ascii=False).encode(),
+                json.dumps(signed_obj, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode(),
+            ]
 
-            computed_signature = hmac.new(
-                self.secret_key.encode(),
-                payload_bytes,
-                hashlib.sha256
-            ).hexdigest()
-            
-            return hmac.compare_digest(computed_signature, signature)
+            for payload_bytes in serialized_candidates:
+                computed_signature = hmac.new(
+                    self.secret_key.encode(),
+                    payload_bytes,
+                    hashlib.sha256,
+                ).hexdigest()
+                if hmac.compare_digest(computed_signature, signature):
+                    return True
+            return False
         
         except Exception:
             logger.exception("Webhook signature verification error")
