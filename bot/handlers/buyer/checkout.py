@@ -287,7 +287,7 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
             processing_days = 2 if seller_count > 1 else 1
             eta = add_business_days_excluding_sunday(datetime.utcnow(), processing_days)
 
-            payment_links: list[tuple[int, str, str]] = []
+            created_orders: list[Order] = []
             for item in cart_items:
                 listing = await session.get(Listing, item.listing_id, with_for_update=True)
                 if not listing or not listing.available:
@@ -324,51 +324,55 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
                 )
                 session.add(order)
                 await session.flush()
+                created_orders.append(order)
 
-                reference = f"VENDOOR_{order.id}_{buyer_telegram_id}"
-                korapay_ref = await korapay.initialize_charge(
-                    amount=order.amount,
-                    reference=reference,
-                    customer_email=_resolve_customer_email(buyer, buyer_telegram_id),
-                    customer_name=buyer.first_name,
-                    callback_url=f"{settings.api_host}/webhooks/korapay",
+            total_amount = sum(order.amount for order in created_orders)
+            order_ids = [str(order.id) for order in created_orders]
+            cart_reference = (
+                f"VENDOOR_CART_{buyer_telegram_id}_{int(datetime.utcnow().timestamp())}_{'-'.join(order_ids)}"
+            )
+            korapay_ref = await korapay.initialize_charge(
+                amount=total_amount,
+                reference=cart_reference,
+                customer_email=_resolve_customer_email(buyer, buyer_telegram_id),
+                customer_name=buyer.first_name,
+                callback_url=f"{settings.api_host}/webhooks/korapay",
+            )
+            if not korapay_ref:
+                await session.rollback()
+                await safe_edit_text(
+                    callback,
+                    "Payment initialization failed. Please retry checkout.",
+                    reply_markup=get_main_menu_inline(),
                 )
-                if not korapay_ref:
-                    await session.rollback()
-                    await safe_edit_text(
-                        callback,
-                        "Payment initialization failed for one of your items. Please retry checkout.",
-                        reply_markup=get_main_menu_inline(),
-                    )
-                    await state.clear()
-                    return
+                await state.clear()
+                return
 
-                order.transaction_ref = reference
-                payment_links.append((order.id, listing.title, korapay_ref.checkout_url))
+            # Track reference on first order for easier audit trail without violating unique constraint.
+            if created_orders:
+                created_orders[0].transaction_ref = cart_reference[:255]
 
             for item in cart_items:
                 await session.delete(item)
             await session.commit()
 
+            order_count = len(created_orders)
             await safe_edit_text(
                 callback,
                 (
                     "<b>Cart Checkout Started</b>\n\n"
-                    f"Created {len(payment_links)} order(s).\n"
-                    "A payment link is sent for each order below."
+                    f"Created {order_count} order(s) across your cart.\n"
+                    f"<b>Total Payment:</b> NGN {total_amount:,.2f}\n\n"
+                    "Use the button below to pay once."
                 ),
                 parse_mode="HTML",
-                reply_markup=get_main_menu_inline(),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="Pay Cart Now", url=korapay_ref.checkout_url)],
+                        [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+                    ]
+                ),
             )
-            for order_id, title, checkout_url in payment_links:
-                keyboard = InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text=f"Pay Order #{order_id}", url=checkout_url)]]
-                )
-                await callback.message.answer(
-                    f"<b>{title}</b>\nOrder ID: {order_id}",
-                    parse_mode="HTML",
-                    reply_markup=keyboard,
-                )
         else:
             listing_id = data.get("listing_id")
             result = await session.execute(select(Listing).where(Listing.id == listing_id).with_for_update())

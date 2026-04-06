@@ -90,6 +90,9 @@ async def _handle_payment_success(
         if not reference:
             return {"status": "error", "error": "missing_reference"}
 
+        if reference.startswith("VENDOOR_CART_"):
+            return await _handle_cart_payment_success(reference, session, bot)
+
         # Find order
         result = await session.execute(
             select(Order)
@@ -206,6 +209,140 @@ async def _handle_payment_success(
         await session.rollback()
         logger.exception("Payment success handler error")
         return {"status": "error", "error": "payment_success_handler_failed"}
+
+
+def _extract_cart_reference_order_ids(reference: str) -> list[int]:
+    """
+    Expected format:
+    VENDOOR_CART_<buyer_telegram_id>_<timestamp>_<orderid-orderid-...>
+    """
+    try:
+        parts = reference.split("_", 4)
+        if len(parts) != 5:
+            return []
+        order_ids_part = parts[4]
+        order_ids = []
+        for token in order_ids_part.split("-"):
+            if token.isdigit():
+                order_ids.append(int(token))
+        return order_ids
+    except Exception:
+        return []
+
+
+async def _handle_cart_payment_success(
+    reference: str,
+    session: AsyncSession,
+    bot: Bot | None = None,
+) -> dict:
+    order_ids = _extract_cart_reference_order_ids(reference)
+    if not order_ids:
+        return {"status": "error", "error": "invalid_cart_reference"}
+
+    result = await session.execute(
+        select(Order)
+        .options(
+            joinedload(Order.buyer),
+            joinedload(Order.seller).joinedload(SellerProfile.user),
+            joinedload(Order.listing),
+            joinedload(Order.delivery),
+        )
+        .where(Order.id.in_(order_ids))
+        .with_for_update()
+    )
+    orders = result.scalars().all()
+    if not orders:
+        return {"status": "error", "error": "orders_not_found_for_cart_reference"}
+
+    pending_orders = [order for order in orders if order.status == OrderStatus.PENDING]
+    if not pending_orders:
+        return {
+            "status": "success",
+            "message": "Cart orders already marked as paid",
+            "order_ids": [order.id for order in orders],
+        }
+
+    # Validate stock before committing status updates.
+    required_by_listing: dict[int, int] = {}
+    for order in pending_orders:
+        required_by_listing[order.listing_id] = required_by_listing.get(order.listing_id, 0) + order.quantity
+
+    listing_rows = await session.execute(
+        select(Listing).where(Listing.id.in_(list(required_by_listing.keys()))).with_for_update()
+    )
+    listings_by_id = {listing.id: listing for listing in listing_rows.scalars().all()}
+
+    for listing_id, required_qty in required_by_listing.items():
+        listing = listings_by_id.get(listing_id)
+        if not listing or not listing.available or listing.quantity < required_qty:
+            for order in pending_orders:
+                order.status = OrderStatus.CANCELLED
+            await session.commit()
+            return {
+                "status": "error",
+                "error": "listing_out_of_stock_for_cart_payment",
+                "listing_id": listing_id,
+            }
+
+    now = datetime.utcnow()
+    for listing_id, required_qty in required_by_listing.items():
+        listing = listings_by_id[listing_id]
+        listing.quantity -= required_qty
+        listing.available = listing.quantity > 0
+
+    for order in pending_orders:
+        order.status = OrderStatus.PAID
+        order.paid_at = now
+        if order.transaction_ref is None:
+            synthesized_ref = f"{reference}_{order.id}"
+            order.transaction_ref = synthesized_ref[:255]
+        if not order.delivery:
+            delivery = Delivery(order_id=order.id, status=DeliveryStatus.PENDING_ASSIGNMENT)
+            session.add(delivery)
+            await session.flush()
+            session.add(
+                DeliveryEvent(
+                    delivery_id=delivery.id,
+                    event_type=DeliveryEventType.ASSIGNED,
+                    actor="SYSTEM",
+                    note="Cart payment confirmed; ready for delivery assignment",
+                )
+            )
+
+    await session.commit()
+
+    buyer = next((order.buyer for order in orders if order.buyer), None)
+    if bot and buyer and buyer.telegram_id:
+        try:
+            await bot.send_message(
+                chat_id=int(buyer.telegram_id),
+                text=(
+                    f"Payment confirmed for {len(pending_orders)} order(s).\n"
+                    "Your deliveries will be assigned shortly."
+                ),
+            )
+        except Exception:
+            pass
+
+    for order in pending_orders:
+        seller_user = order.seller.user if order.seller else None
+        if bot and seller_user and seller_user.telegram_id:
+            try:
+                await bot.send_message(
+                    chat_id=int(seller_user.telegram_id),
+                    text=(
+                        f"You have a new paid order #{order.id}.\n"
+                        f"Please prepare {order.quantity} unit(s) for delivery."
+                    ),
+                )
+            except Exception:
+                pass
+
+    return {
+        "status": "success",
+        "message": "Cart payment processed",
+        "order_ids": [order.id for order in orders],
+    }
 
 
 async def _handle_payment_failed(reference: str, session: AsyncSession) -> dict:

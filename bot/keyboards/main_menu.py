@@ -44,6 +44,7 @@ def get_catalog_categories() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=label, callback_data=callback)]
             for label, callback in categories
         ]
+        + [[InlineKeyboardButton(text="Search Listings", callback_data="catalog_search_start")]]
         + [[InlineKeyboardButton(text="Back", callback_data="back_to_menu")]]
     )
     return keyboard

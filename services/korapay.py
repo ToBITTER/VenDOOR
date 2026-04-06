@@ -39,6 +39,7 @@ class KorapayClient:
         self.public_key = settings.korapay_public_key
         self.secret_key = settings.korapay_secret_key
         self.encryption_key = settings.korapay_encryption_key
+        self.payment_channels = settings.korapay_payment_channels
         self.headers = {
             "Authorization": f"Bearer {self.secret_key}",
             "Content-Type": "application/json",
@@ -85,6 +86,12 @@ class KorapayClient:
         encrypted = aesgcm.encrypt(iv, plaintext, None)
         ciphertext, tag = encrypted[:-16], encrypted[-16:]
         return f"{iv.hex()}:{ciphertext.hex()}:{tag.hex()}"
+
+    def _parsed_channels(self) -> list[str]:
+        raw = (self.payment_channels or "").strip()
+        if not raw:
+            return []
+        return [channel.strip() for channel in raw.split(",") if channel.strip()]
     
     async def initialize_charge(
         self,
@@ -117,6 +124,9 @@ class KorapayClient:
             "notification_url": callback_url,  # Webhook for payment status
             "currency": "NGN",
         }
+        channels = self._parsed_channels()
+        if channels:
+            payload["channels"] = channels
         
         try:
             async with httpx.AsyncClient() as client:

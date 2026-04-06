@@ -6,8 +6,10 @@ import time
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramRetryAfter
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
-from sqlalchemy import select
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -26,6 +28,10 @@ router = Router()
 PAGE_SIZE = 10
 CACHE_TTL_SECONDS = 20
 _CATEGORY_CACHE: dict[str, tuple[float, list[Listing]]] = {}
+
+
+class CatalogSearchStates(StatesGroup):
+    awaiting_query = State()
 
 
 def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
@@ -69,9 +75,7 @@ async def _fetch_category_listings(
         .where(Listing.category == category)
         .where(Listing.available == True)
         .order_by(
-            SellerProfile.is_featured.desc(),
-            SellerProfile.priority_score.desc(),
-            Listing.created_at.desc(),
+            Listing.created_at.asc(),
         )
         .limit(200)
     )
@@ -240,6 +244,77 @@ async def browse_catalog(callback: CallbackQuery):
     await safe_answer_callback(callback)
     text = "Browse Catalog\n\nSelect a category to view available products:"
     await safe_render_text_screen(callback, text, reply_markup=get_catalog_categories())
+
+
+@router.callback_query(F.data == "catalog_search_start")
+async def catalog_search_start(callback: CallbackQuery, state: FSMContext):
+    await safe_answer_callback(callback)
+    await state.clear()
+    await state.set_state(CatalogSearchStates.awaiting_query)
+    await safe_replace_with_screen(
+        callback,
+        "<b>Search Listings</b>\n\nSend a keyword (title or description).",
+        parse_mode="HTML",
+        reply_markup=_build_category_bottom_keyboard(),
+    )
+
+
+@router.message(CatalogSearchStates.awaiting_query)
+async def catalog_search_query(message: Message, state: FSMContext, session: AsyncSession):
+    query_text = (message.text or "").strip()
+    if len(query_text) < 2:
+        await message.answer("Please enter at least 2 characters.")
+        return
+
+    result = await session.execute(
+        select(Listing)
+        .options(joinedload(Listing.seller).joinedload(SellerProfile.user))
+        .where(Listing.available == True)
+        .where(
+            or_(
+                Listing.title.ilike(f"%{query_text}%"),
+                Listing.description.ilike(f"%{query_text}%"),
+            )
+        )
+        .order_by(Listing.created_at.asc())
+        .limit(15)
+    )
+    listings = result.scalars().all()
+    if not listings:
+        await message.answer("No matching listings found. Try another keyword.")
+        return
+
+    await message.answer(
+        f"<b>Search Results</b>\nKeyword: <code>{query_text}</code>\nFound: {len(listings)}",
+        parse_mode="HTML",
+        reply_markup=_build_category_bottom_keyboard(),
+    )
+    for idx, listing in enumerate(listings, start=1):
+        seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
+        card_text = (
+            f"<b>{idx}. {listing.title}</b>\n\n"
+            f"Listing ID: {listing.listing_code}\n"
+            f"{listing.description}\n\n"
+            f"Category: {format_category_label(listing.category, listing.accessory_subcategory)}\n"
+            f"Price: NGN {listing.buyer_price:,.2f}\n"
+            f"Stock: {'Out of Stock' if listing.quantity <= 0 or not listing.available else f'{listing.quantity} left'}\n"
+            f"Seller: {seller_name}"
+        )
+        keyboard = _build_listing_card_keyboard(listing)
+        if listing.image_url:
+            await message.answer_photo(
+                photo=listing.image_url,
+                caption=card_text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        else:
+            await message.answer(
+                card_text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("browse_cat_"))
