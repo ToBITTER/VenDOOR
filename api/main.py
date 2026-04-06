@@ -10,6 +10,7 @@ import secrets
 import time
 import uuid
 import hmac
+import json
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -270,22 +271,34 @@ async def korapay_webhook_handler(request: Request, session: AsyncSession = Depe
     }
     """
     try:
-        payload_bytes = await request.body()
         payload = await request.json()
     except Exception:
         logger.exception("Invalid Korapay webhook payload")
         raise HTTPException(status_code=400, detail="Invalid webhook payload")
 
-    if settings.korapay_webhook_secret:
+    if settings.korapay_webhook_secret or settings.korapay_secret_key:
         signature = request.headers.get("x-korapay-signature")
         if not signature:
             raise HTTPException(status_code=401, detail="Missing Korapay signature")
-        computed = hmac.new(
-            settings.korapay_webhook_secret.encode("utf-8"),
-            payload_bytes,
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(computed, signature):
+
+        # Korapay signs ONLY the "data" object with HMAC SHA256 using your secret key.
+        signed_data = payload.get("data", {})
+        serialized_data = json.dumps(signed_data, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+        candidate_keys = []
+        if settings.korapay_webhook_secret:
+            candidate_keys.append(settings.korapay_webhook_secret)
+        # Per Korapay docs, secret key is used for signing.
+        candidate_keys.append(settings.korapay_secret_key)
+
+        is_valid = False
+        for key in candidate_keys:
+            computed = hmac.new(key.encode("utf-8"), serialized_data, hashlib.sha256).hexdigest()
+            if hmac.compare_digest(computed, signature):
+                is_valid = True
+                break
+
+        if not is_valid:
             raise HTTPException(status_code=401, detail="Invalid Korapay signature")
 
     return await korapay_webhook.handle_korapay_webhook(payload, session, app.state.bot)

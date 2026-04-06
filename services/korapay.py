@@ -230,12 +230,18 @@ class KorapayClient:
         """
         try:
             if isinstance(payload, bytes):
-                payload_bytes = payload
+                payload = json.loads(payload.decode("utf-8"))
             elif isinstance(payload, str):
-                payload_bytes = payload.encode()
+                payload = json.loads(payload)
+
+            if isinstance(payload, dict):
+                # Korapay signs ONLY the `data` object.
+                signed_obj = payload.get("data", {})
             else:
-                payload_string = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-                payload_bytes = payload_string.encode()
+                signed_obj = {}
+
+            payload_string = json.dumps(signed_obj, separators=(",", ":"), sort_keys=True)
+            payload_bytes = payload_string.encode()
 
             computed_signature = hmac.new(
                 self.secret_key.encode(),
