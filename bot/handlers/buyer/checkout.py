@@ -4,14 +4,13 @@ Collects delivery details and initiates payment.
 """
 
 from datetime import datetime
-from datetime import timedelta
 
 from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -24,7 +23,6 @@ from services.korapay import get_korapay_client
 
 router = Router()
 settings = get_settings()
-CART_RESERVATION_MINUTES = 10
 
 
 class CheckoutStates(StatesGroup):
@@ -41,33 +39,6 @@ def _resolve_customer_email(user: User, buyer_telegram_id: str) -> str:
     if user.username and "@" in user.username:
         return user.username.strip().lower()
     return f"user_{buyer_telegram_id}@vendoor.app"
-
-
-async def _available_quantity_for_buyer(
-    session: AsyncSession,
-    listing_id: int,
-    buyer_id: int,
-) -> int:
-    reservation_cutoff = datetime.utcnow() - timedelta(minutes=CART_RESERVATION_MINUTES)
-    listing_qty_result = await session.execute(select(Listing.quantity).where(Listing.id == listing_id))
-    listing_quantity = int(listing_qty_result.scalar() or 0)
-
-    reserved_cart_result = await session.execute(
-        select(func.coalesce(func.sum(CartItem.quantity), 0))
-        .where(CartItem.listing_id == listing_id)
-        .where(CartItem.buyer_id != buyer_id)
-        .where(CartItem.created_at >= reservation_cutoff)
-    )
-    reserved_cart = int(reserved_cart_result.scalar() or 0)
-
-    reserved_pending_result = await session.execute(
-        select(func.coalesce(func.sum(Order.quantity), 0))
-        .where(Order.listing_id == listing_id)
-        .where(Order.buyer_id != buyer_id)
-        .where(Order.status == OrderStatus.PENDING)
-    )
-    reserved_pending = int(reserved_pending_result.scalar() or 0)
-    return max(0, listing_quantity - reserved_cart - reserved_pending)
 
 
 async def start_checkout(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
@@ -300,8 +271,7 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
                     await state.clear()
                     return
 
-                available_for_buyer = await _available_quantity_for_buyer(session, listing.id, buyer.id)
-                if item.quantity > available_for_buyer:
+                if listing.quantity < item.quantity:
                     await session.rollback()
                     await safe_edit_text(
                         callback,
@@ -385,11 +355,10 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
                 )
                 await state.clear()
                 return
-            available_for_buyer = await _available_quantity_for_buyer(session, listing.id, buyer.id)
-            if available_for_buyer < 1:
+            if listing.quantity < 1:
                 await safe_edit_text(
                     callback,
-                    f"This item is currently reserved in another active cart. Try after {CART_RESERVATION_MINUTES} mins.",
+                    "This item is out of stock now. Please choose another listing.",
                     reply_markup=get_main_menu_inline(),
                 )
                 await state.clear()

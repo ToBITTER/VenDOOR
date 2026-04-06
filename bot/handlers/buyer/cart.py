@@ -2,22 +2,20 @@
 Buyer cart handler - add/remove cart items and trigger cart checkout.
 """
 
-from datetime import datetime, timedelta
 from decimal import Decimal
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline
-from db.models import CartItem, Listing, Order, OrderStatus, User
+from db.models import CartItem, Listing, User
 
 router = Router()
-CART_RESERVATION_MINUTES = 10
 
 
 def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
@@ -47,34 +45,6 @@ def _post_add_to_cart_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-async def _available_quantity_for_buyer(
-    session: AsyncSession,
-    listing_id: int,
-    buyer_id: int,
-) -> int:
-    reservation_cutoff = datetime.utcnow() - timedelta(minutes=CART_RESERVATION_MINUTES)
-    listing_result = await session.execute(select(Listing.quantity).where(Listing.id == listing_id))
-    listing_quantity = int(listing_result.scalar() or 0)
-
-    reserved_cart_result = await session.execute(
-        select(func.coalesce(func.sum(CartItem.quantity), 0))
-        .where(CartItem.listing_id == listing_id)
-        .where(CartItem.buyer_id != buyer_id)
-        .where(CartItem.created_at >= reservation_cutoff)
-    )
-    reserved_cart = int(reserved_cart_result.scalar() or 0)
-
-    reserved_pending_result = await session.execute(
-        select(func.coalesce(func.sum(Order.quantity), 0))
-        .where(Order.listing_id == listing_id)
-        .where(Order.buyer_id != buyer_id)
-        .where(Order.status == OrderStatus.PENDING)
-    )
-    reserved_pending = int(reserved_pending_result.scalar() or 0)
-
-    return max(0, listing_quantity - reserved_cart - reserved_pending)
-
-
 @router.callback_query(F.data.startswith("add_to_cart_"))
 async def add_to_cart(callback: CallbackQuery, session: AsyncSession):
     listing_id = _callback_int_suffix(callback.data, "add_to_cart_")
@@ -101,20 +71,11 @@ async def add_to_cart(callback: CallbackQuery, session: AsyncSession):
     )
     cart_item = cart_result.scalars().first()
 
-    available_for_buyer = await _available_quantity_for_buyer(session, listing.id, buyer.id)
-    if available_for_buyer <= 0 and not cart_item:
-        await safe_answer_callback(
-            callback,
-            text=f"This item is currently reserved in another active cart. Try after {CART_RESERVATION_MINUTES} mins.",
-            show_alert=True,
-        )
-        return
-
     if cart_item:
-        if cart_item.quantity >= available_for_buyer:
+        if cart_item.quantity >= listing.quantity:
             await safe_answer_callback(
                 callback,
-                text="You already hold the last available unit. Proceed to checkout.",
+                text="No more stock available for this item.",
                 show_alert=True,
             )
             return
