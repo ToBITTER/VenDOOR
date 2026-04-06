@@ -141,9 +141,6 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
         text += f"\n<b>Delivery Status:</b> {order.delivery.status.value}\n"
     if order.delivery_eta_at:
         text += f"<b>ETA:</b> {order.delivery_eta_at.strftime('%d/%m/%Y %H:%M')}\n"
-    if order.delivery_confirm_deadline_at and order.status == OrderStatus.PAID:
-        text += f"<b>Confirm Before:</b> {order.delivery_confirm_deadline_at.strftime('%d/%m/%Y %H:%M')}\n"
-
     text += f"\n<b>Date:</b> {order.created_at.strftime('%d/%m/%Y %H:%M')}"
 
     await safe_replace_with_screen(

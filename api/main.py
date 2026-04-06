@@ -1314,7 +1314,7 @@ async def delivery_delivered(
         raise HTTPException(status_code=404, detail="Delivery job not found")
 
     now = datetime.utcnow()
-    confirmation_deadline = now + timedelta(hours=4)
+    confirmation_deadline = now + timedelta(hours=settings.escrow_release_hours)
 
     delivery.status = DeliveryStatus.DELIVERED
     delivery.delivered_at = now
@@ -1340,7 +1340,7 @@ async def delivery_delivered(
                 chat_id=int(buyer.telegram_id),
                 text=(
                     f"Order #{delivery.order_id} has been marked delivered.\n\n"
-                    "Please confirm receipt within 4 hours to release payment."
+                    "Please confirm receipt to release payment."
                 ),
             )
         except Exception:

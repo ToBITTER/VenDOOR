@@ -201,7 +201,7 @@ async def handle_delivery_details(message: Message, state: FSMContext, session: 
 
     text += (
         "<b>Payment is protected by escrow</b>\n"
-        "After delivery, you have 4 hours to confirm receipt before auto-release."
+        "After delivery, please confirm receipt to complete the order."
     )
 
     keyboard = InlineKeyboardMarkup(

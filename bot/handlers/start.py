@@ -97,8 +97,7 @@ async def help_handler(callback: CallbackQuery):
         "3. Create listings with product photos\n"
         "4. Get paid when buyers confirm receipt\n\n"
         "<b>Escrow:</b>\n"
-        "Your payment is protected. Seller payment is released after receipt confirmation.\n"
-        "After delivery, you have 4 hours to confirm receipt before auto-release.\n\n"
+        "Your payment is protected. Seller payment is released after receipt confirmation.\n\n"
         "<b>Need support?</b>\n"
         "Raise a complaint from your orders and our team will review it."
     )

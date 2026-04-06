@@ -169,7 +169,7 @@ async def notify_buyer_delivery_status_update(
         message_text = (
             f"📦 <b>Order Delivered</b>\n\n"
             f"Order #{order.id} has been delivered!\n\n"
-            f"Please confirm receipt within 4 hours to complete the transaction."
+            "Please confirm receipt to complete the transaction."
         )
     else:
         return
