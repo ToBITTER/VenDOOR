@@ -1,11 +1,14 @@
 """Delivery status update service for shared logic between API and bot handlers."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from db.models import Delivery, DeliveryEvent, DeliveryStatus, DeliveryEventType, DeliveryOrder, Order
+from core.config import get_settings
+
+settings = get_settings()
 
 
 async def update_delivery_status(
@@ -47,6 +50,13 @@ async def update_delivery_status(
         delivery.in_transit_at = datetime.now(timezone.utc)
     elif new_status == DeliveryStatus.DELIVERED:
         delivery.delivered_at = datetime.now(timezone.utc)
+        order = await session.get(Order, delivery.order_id)
+        if order:
+            deadline = datetime.now(timezone.utc) + timedelta(hours=settings.escrow_release_hours)
+            order.delivered_at = datetime.now(timezone.utc)
+            order.delivery_confirm_deadline_at = deadline
+            order.auto_release_scheduled_at = deadline
+            session.add(order)
 
     # Update location if provided
     if latitude is not None and longitude is not None:

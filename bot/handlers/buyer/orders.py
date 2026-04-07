@@ -2,6 +2,8 @@
 Buyer orders handler - view orders, confirm receipt, raise disputes.
 """
 
+from datetime import datetime
+
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
@@ -194,6 +196,8 @@ async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
 
     try:
         order.status = OrderStatus.COMPLETED
+        order.escrow_released_at = datetime.utcnow()
+        order.auto_release_scheduled_at = None
         await session.commit()
 
         await safe_replace_with_screen(

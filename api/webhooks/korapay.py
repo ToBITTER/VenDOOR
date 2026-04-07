@@ -87,10 +87,18 @@ async def handle_korapay_webhook(
         if not isinstance(webhook_data, dict):
             return {"status": "error", "error": "invalid payload type"}
 
-        event = webhook_data.get("event")
+        event = str(webhook_data.get("event") or "").strip()
         data = webhook_data.get("data", {})
         reference = data.get("ref")
-        status = data.get("status")
+        status = str(data.get("status") or "").strip().lower()
+        event_lc = event.lower()
+
+        logger.info(
+            "Korapay webhook received event=%s status=%s reference=%s",
+            event or "N/A",
+            status or "N/A",
+            reference or "N/A",
+        )
 
         # Idempotency guard: ignore duplicate webhook events for same event/reference.
         is_new = await _create_webhook_receipt(
@@ -109,16 +117,27 @@ async def handle_korapay_webhook(
         # if not korapay_client.verify_webhook_signature(webhook_data, signature):
         #     return {"error": "Invalid signature"}, 401
         
-        if event == "charge.completed" and status == "success":
+        success_events = {"charge.completed", "charge.success", "charge.successful"}
+        failed_events = {"charge.failed", "charge.cancelled"}
+        success_statuses = {"success", "successful", "paid"}
+        failed_statuses = {"failed", "cancelled"}
+
+        if event_lc in success_events or status in success_statuses:
             # Payment successful - update order to PAID and schedule escrow release
             return await _handle_payment_success(reference, data, session, bot)
-        
-        elif event == "charge.failed" or status == "failed":
+
+        elif event_lc in failed_events or status in failed_statuses:
             # Payment failed - cancel order
             return await _handle_payment_failed(reference, session)
-        
+
         else:
             # Unknown event
+            logger.warning(
+                "Korapay webhook ignored event=%s status=%s reference=%s",
+                event or "N/A",
+                status or "N/A",
+                reference or "N/A",
+            )
             return {"status": "ignored", "event": event}
     
     except Exception:
@@ -229,7 +248,7 @@ async def _handle_payment_success(
                     ),
                 )
             except Exception:
-                pass
+                logger.exception("Failed to notify buyer for paid order %s", order.id)
 
         if bot and seller_telegram_id:
             buyer_contact = f"@{buyer_username}" if buyer_username else "Buyer handle not set"
@@ -243,7 +262,7 @@ async def _handle_payment_success(
                     ),
                 )
             except Exception:
-                pass
+                logger.exception("Failed to notify seller for paid order %s", order.id)
         
         # Queue Celery task for auto-release
         # from tasks.escrow_release import release_escrow_auto
@@ -375,7 +394,7 @@ async def _handle_cart_payment_success(
                 ),
             )
         except Exception:
-            pass
+            logger.exception("Failed to notify buyer for cart payment %s", reference)
 
     for order in pending_orders:
         seller_user = order.seller.user if order.seller else None
@@ -389,7 +408,7 @@ async def _handle_cart_payment_success(
                     ),
                 )
             except Exception:
-                pass
+                logger.exception("Failed to notify seller for cart-paid order %s", order.id)
 
     return {
         "status": "success",
