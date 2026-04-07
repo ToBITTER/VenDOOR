@@ -11,7 +11,7 @@ from aiogram import Bot
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import selectinload
 
 from db.models import (
     Delivery,
@@ -202,8 +202,10 @@ async def _handle_payment_success(
         result = await session.execute(
             select(Order)
             .options(
-                joinedload(Order.buyer),
-                joinedload(Order.seller).joinedload(SellerProfile.user),
+                # Keep row-lock query free of JOIN eager-loads (Postgres FOR UPDATE + outer joins can fail).
+                selectinload(Order.buyer),
+                selectinload(Order.seller).selectinload(SellerProfile.user),
+                selectinload(Order.delivery),
             )
             .where(Order.transaction_ref == reference)
             .with_for_update()
@@ -347,10 +349,11 @@ async def _handle_cart_payment_success(
     result = await session.execute(
         select(Order)
         .options(
-            joinedload(Order.buyer),
-            joinedload(Order.seller).joinedload(SellerProfile.user),
-            joinedload(Order.listing),
-            joinedload(Order.delivery),
+            # Use selectinload so FOR UPDATE only locks orders rows and avoids outer-join lock errors.
+            selectinload(Order.buyer),
+            selectinload(Order.seller).selectinload(SellerProfile.user),
+            selectinload(Order.listing),
+            selectinload(Order.delivery),
         )
         .where(Order.id.in_(order_ids))
         .with_for_update()
