@@ -149,6 +149,7 @@ class KorapayClient:
                 "email": customer_email,
                 "name": customer_name,
             },
+            "metadata": {"order_reference": reference},
             "notification_url": callback_url,  # Webhook for payment status
             "currency": "NGN",
         }

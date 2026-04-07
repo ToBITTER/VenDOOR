@@ -89,15 +89,16 @@ async def handle_korapay_webhook(
 
         event = str(webhook_data.get("event") or "").strip()
         data = webhook_data.get("data", {})
-        reference = data.get("ref")
+        reference = _extract_reference(data)
         status = str(data.get("status") or "").strip().lower()
         event_lc = event.lower()
 
         logger.info(
-            "Korapay webhook received event=%s status=%s reference=%s",
+            "Korapay webhook received event=%s status=%s reference=%s keys=%s",
             event or "N/A",
             status or "N/A",
             reference or "N/A",
+            ",".join(sorted(data.keys())) if isinstance(data, dict) else "N/A",
         )
 
         # Idempotency guard: ignore duplicate webhook events for same event/reference.
@@ -143,6 +144,38 @@ async def handle_korapay_webhook(
     except Exception:
         logger.exception("Webhook processing error")
         return {"status": "error", "error": "webhook_processing_failed"}
+
+
+def _extract_reference(data: dict) -> str | None:
+    """
+    Korapay payloads may vary by event/version. Try common reference keys.
+    """
+    if not isinstance(data, dict):
+        return None
+
+    candidates = [
+        data.get("ref"),
+        data.get("reference"),
+        data.get("merchant_reference"),
+        data.get("transaction_reference"),
+        data.get("tx_ref"),
+    ]
+
+    metadata = data.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.extend(
+            [
+                metadata.get("order_reference"),
+                metadata.get("reference"),
+                metadata.get("ref"),
+            ]
+        )
+
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return None
 
 
 async def _handle_payment_success(
