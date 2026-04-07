@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram import Bot, Dispatcher
-from aiogram.types import Update
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from aiogram.exceptions import TelegramRetryAfter
 from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload
@@ -1180,13 +1180,26 @@ async def assign_delivery_agent(
     buyer = delivery.order.buyer if delivery.order else None
     if buyer and buyer.telegram_id:
         try:
+            track_keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Track Delivery",
+                            callback_data=f"order_track_{delivery.order_id}",
+                        )
+                    ]
+                ]
+            )
             await app.state.bot.send_message(
                 chat_id=int(buyer.telegram_id),
                 text=(
-                    f"Delivery assigned for order #{delivery.order_id}.\n"
+                    "Your order has been assigned to a rider.\n\n"
+                    f"Order: #{delivery.order_id}\n"
                     f"Rider: {agent.name}\n"
-                    f"Phone: {agent.phone or 'N/A'}"
+                    f"Phone: {agent.phone or 'N/A'}\n\n"
+                    "Tap the button below to track updates."
                 ),
+                reply_markup=track_keyboard,
             )
         except Exception:
             logger.exception("Failed to notify buyer for assigned delivery %s", delivery.id)

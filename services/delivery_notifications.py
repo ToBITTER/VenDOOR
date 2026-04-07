@@ -37,7 +37,12 @@ async def notify_agent_delivery_assigned(delivery_id: int, session: AsyncSession
     # Fetch delivery with all linked orders
     result = await session.execute(
         select(Delivery)
-        .options(joinedload(Delivery.agent))
+        .options(
+            joinedload(Delivery.agent),
+            joinedload(Delivery.order).joinedload(Order.buyer),
+            joinedload(Delivery.order).joinedload(Order.listing),
+            joinedload(Delivery.order).joinedload(Order.seller).joinedload(SellerProfile.user),
+        )
         .where(Delivery.id == delivery_id)
     )
     delivery = result.scalars().first()
@@ -56,6 +61,32 @@ async def notify_agent_delivery_assigned(delivery_id: int, session: AsyncSession
         .order_by(DeliveryOrder.sequence)
     )
     delivery_orders = result.scalars().all()
+    if not delivery_orders and delivery.order:
+        # Fallback for legacy deliveries that were created before delivery_orders linking.
+        message_text = (
+            "<b>New Delivery Job</b>\n\n"
+            f"<b>Delivery ID:</b> {delivery_id}\n"
+            f"<b>Order:</b> #{delivery.order.id}\n"
+            f"<b>Delivery To:</b> {delivery.order.buyer_address or 'TBD'}\n\n"
+            "Tap START PICKUP to begin."
+        )
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="START PICKUP", callback_data=f"delivery_start_pickup_{delivery_id}")],
+            ]
+        )
+        try:
+            await bot_instance.send_message(
+                chat_id=delivery.agent.telegram_id,
+                text=message_text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        except Exception:
+            pass
+        return
     if not delivery_orders:
         return
 

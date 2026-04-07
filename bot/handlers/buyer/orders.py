@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 from bot.helpers.brand_assets import get_empty_state
 from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline, get_order_actions
-from db.models import Order, OrderStatus, SellerProfile, User
+from db.models import Delivery, Order, OrderStatus, SellerProfile, User
 
 router = Router()
 
@@ -110,7 +110,7 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
         .options(
             selectinload(Order.listing),
             selectinload(Order.seller).selectinload(SellerProfile.user),
-            selectinload(Order.delivery),
+            selectinload(Order.delivery).selectinload(Delivery.agent),
         )
         .where(Order.id == order_id)
     )
@@ -212,3 +212,62 @@ async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
     except Exception:
         await session.rollback()
         await safe_replace_with_screen(callback, "Could not confirm receipt right now. Please try again.")
+
+
+@router.callback_query(F.data.startswith("order_track_"))
+async def track_order(callback: CallbackQuery, session: AsyncSession):
+    order_id = _callback_int_suffix(callback.data, "order_track_")
+    if order_id is None:
+        await safe_answer_callback(callback, text="Invalid order tracking request", show_alert=True)
+        return
+
+    user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
+    user = user_result.scalars().first()
+    if not user:
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
+        return
+
+    result = await session.execute(
+        select(Order)
+        .options(
+            selectinload(Order.listing),
+            selectinload(Order.seller).selectinload(SellerProfile.user),
+            selectinload(Order.delivery).selectinload(Delivery.agent),
+        )
+        .where(Order.id == order_id)
+    )
+    order = result.scalars().first()
+    if not order:
+        await safe_answer_callback(callback, text="Order not found", show_alert=True)
+        return
+    if order.buyer_id != user.id:
+        await safe_answer_callback(callback, text="You can only track your own orders", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+
+    delivery_status = order.delivery.status.value if order.delivery else "PENDING_ASSIGNMENT"
+    rider_name = "To be assigned"
+    rider_phone = "N/A"
+    if order.delivery and order.delivery.agent:
+        rider_name = order.delivery.agent.name or "Assigned"
+        rider_phone = order.delivery.agent.phone or "N/A"
+
+    text = (
+        f"<b>Track Order #{order.id}</b>\n\n"
+        f"<b>Item:</b> {order.listing.title if order.listing else 'Unknown listing'}\n"
+        f"<b>Delivery Status:</b> {delivery_status}\n"
+        f"<b>Rider:</b> {rider_name}\n"
+        f"<b>Phone:</b> {rider_phone}\n"
+    )
+    if order.delivery and order.delivery.current_location_note:
+        text += f"<b>Latest Location Note:</b> {order.delivery.current_location_note}\n"
+    if order.delivered_at:
+        text += f"<b>Delivered At:</b> {order.delivered_at.strftime('%d/%m/%Y %H:%M')}\n"
+
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=get_order_actions(order.id),
+    )

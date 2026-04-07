@@ -53,6 +53,7 @@ def get_catalog_categories() -> InlineKeyboardMarkup:
 def get_order_actions(order_id: int) -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Track Delivery", callback_data=f"order_track_{order_id}")],
             [InlineKeyboardButton(text="Confirm Receipt", callback_data=f"order_confirm_{order_id}")],
             [InlineKeyboardButton(text="Raise Dispute", callback_data=f"order_dispute_{order_id}")],
             [InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")],

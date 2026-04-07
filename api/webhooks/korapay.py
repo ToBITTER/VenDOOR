@@ -17,6 +17,7 @@ from db.models import (
     Delivery,
     DeliveryEvent,
     DeliveryEventType,
+    DeliveryOrder,
     DeliveryStatus,
     Listing,
     Order,
@@ -58,6 +59,29 @@ async def _create_webhook_receipt(
     except IntegrityError:
         await session.rollback()
         return False
+
+
+async def _ensure_delivery_order_link(
+    session: AsyncSession,
+    delivery_id: int,
+    order_id: int,
+) -> None:
+    existing = await session.execute(
+        select(DeliveryOrder).where(
+            DeliveryOrder.delivery_id == delivery_id,
+            DeliveryOrder.order_id == order_id,
+        )
+    )
+    if existing.scalars().first():
+        return
+
+    session.add(
+        DeliveryOrder(
+            delivery_id=delivery_id,
+            order_id=order_id,
+            sequence=1,
+        )
+    )
 
 
 async def handle_korapay_webhook(
@@ -255,6 +279,7 @@ async def _handle_payment_success(
             )
             session.add(delivery)
             await session.flush()
+            await _ensure_delivery_order_link(session, delivery.id, order.id)
             session.add(
                 DeliveryEvent(
                     delivery_id=delivery.id,
@@ -277,9 +302,10 @@ async def _handle_payment_success(
                 await bot.send_message(
                     chat_id=int(buyer_telegram_id),
                     text=(
-                        f"Payment confirmed for order #{order.id}.\n\n"
-                        f"Seller contact: {seller_contact}\n"
-                        "Your delivery will be assigned shortly."
+                        "Payment received successfully.\n\n"
+                        f"Order: #{order.id}\n"
+                        f"Seller contact: {seller_contact}\n\n"
+                        "Next step: we assign a rider and send you tracking."
                     ),
                 )
             except Exception:
@@ -408,6 +434,7 @@ async def _handle_cart_payment_success(
             delivery = Delivery(order_id=order.id, status=DeliveryStatus.PENDING_ASSIGNMENT)
             session.add(delivery)
             await session.flush()
+            await _ensure_delivery_order_link(session, delivery.id, order.id)
             session.add(
                 DeliveryEvent(
                     delivery_id=delivery.id,
@@ -425,8 +452,9 @@ async def _handle_cart_payment_success(
             await bot.send_message(
                 chat_id=int(buyer.telegram_id),
                 text=(
-                    f"Payment confirmed for {len(pending_orders)} order(s).\n"
-                    "Your deliveries will be assigned shortly."
+                    "Payment received successfully.\n\n"
+                    f"{len(pending_orders)} order(s) confirmed.\n"
+                    "Next step: we assign rider(s) and send you tracking."
                 ),
             )
         except Exception:
