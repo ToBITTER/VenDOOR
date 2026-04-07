@@ -4,6 +4,7 @@ Admin handlers for seller verification workflows.
 
 import asyncio
 import hashlib
+import logging
 import re
 import secrets
 
@@ -21,10 +22,32 @@ from sqlalchemy.orm import joinedload
 
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text, safe_replace_with_screen
 from core.config import get_settings
-from db.models import Delivery, DeliveryAgent, DeliveryStatus, Listing, Order, SellerProfile, User
+from db.models import (
+    Delivery,
+    DeliveryAgent,
+    DeliveryOrder,
+    DeliveryStatus,
+    Listing,
+    Order,
+    SellerProfile,
+    User,
+)
 
 router = Router()
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+async def _ensure_delivery_order_link(session: AsyncSession, delivery_id: int, order_id: int) -> None:
+    existing = await session.execute(
+        select(DeliveryOrder).where(
+            DeliveryOrder.delivery_id == delivery_id,
+            DeliveryOrder.order_id == order_id,
+        )
+    )
+    if existing.scalars().first():
+        return
+    session.add(DeliveryOrder(delivery_id=delivery_id, order_id=order_id, sequence=1))
 
 
 class AdminStates(StatesGroup):
@@ -1150,20 +1173,35 @@ async def admin_delivery_set_agent(callback: CallbackQuery, session: AsyncSessio
 
     delivery.agent_id = agent.id
     delivery.status = DeliveryStatus.ASSIGNED
+    if delivery.order_id:
+        await _ensure_delivery_order_link(session, delivery.id, delivery.order_id)
     await session.commit()
 
     if delivery.order and delivery.order.buyer and delivery.order.buyer.telegram_id:
         try:
+            track_keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Track Delivery",
+                            callback_data=f"order_track_{delivery.order_id}",
+                        )
+                    ]
+                ]
+            )
             await callback.bot.send_message(
                 chat_id=int(delivery.order.buyer.telegram_id),
                 text=(
-                    f"Delivery assigned for order #{delivery.order_id}.\n"
+                    "Your order has been assigned to a rider.\n\n"
+                    f"Order: #{delivery.order_id}\n"
                     f"Rider: {agent.name}\n"
-                    f"Phone: {agent.phone or 'N/A'}"
+                    f"Phone: {agent.phone or 'N/A'}\n\n"
+                    "Tap Track Delivery for live status."
                 ),
+                reply_markup=track_keyboard,
             )
         except Exception:
-            pass
+            logger.exception("Failed to notify buyer for delivery assignment delivery_id=%s", delivery.id)
 
     # Notify agent via Telegram with pickup details
     if agent.telegram_id:
@@ -1171,7 +1209,39 @@ async def admin_delivery_set_agent(callback: CallbackQuery, session: AsyncSessio
         try:
             await notify_agent_delivery_assigned(delivery.id, session)
         except Exception:
-            pass
+            logger.exception("Failed to notify assigned agent delivery_id=%s agent_id=%s", delivery.id, agent.id)
+            try:
+                fallback_keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="START PICKUP",
+                                callback_data=f"delivery_start_pickup_{delivery.id}",
+                            )
+                        ]
+                    ]
+                )
+                await callback.bot.send_message(
+                    chat_id=int(agent.telegram_id),
+                    text=(
+                        "<b>New Delivery Job</b>\n\n"
+                        f"<b>Delivery ID:</b> {delivery.id}\n"
+                        f"<b>Order ID:</b> {delivery.order_id}\n"
+                        "Tap START PICKUP to begin."
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=fallback_keyboard,
+                )
+            except Exception:
+                logger.exception("Failed fallback agent notification delivery_id=%s agent_id=%s", delivery.id, agent.id)
+    else:
+        if callback.message:
+            await callback.message.answer(
+                (
+                    "Assigned, but this agent has no Telegram ID on profile.\n"
+                    "Add Telegram ID to the agent to receive rider buttons."
+                )
+            )
 
     await safe_edit_text(
         callback,
