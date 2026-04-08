@@ -905,7 +905,7 @@ async def admin_delivery_agent_add(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.awaiting_delivery_agent_name)
     await safe_replace_with_screen(
         callback,
-        "<b>Add Delivery Agent</b>\n\nStep 1/4\nSend the rider full name.",
+        "<b>Add Delivery Agent</b>\n\nStep 1/4\nSend the agent full name.",
         parse_mode="HTML",
         reply_markup=_delete_help_keyboard(),
     )
@@ -1005,7 +1005,7 @@ async def receive_delivery_agent_telegram_id(message: Message, state: FSMContext
         except IntegrityError:
             await session.rollback()
             await message.reply(
-                "Could not update this rider right now due to a database conflict. Please retry."
+                "Could not update this agent right now due to a database conflict. Please retry."
             )
             return
         await state.clear()
@@ -1017,7 +1017,7 @@ async def receive_delivery_agent_telegram_id(message: Message, state: FSMContext
                 f"<b>Phone:</b> {existing_agent.phone or 'N/A'}\n"
                 f"<b>Vehicle:</b> {existing_agent.vehicle_type or 'N/A'}\n"
                 f"<b>Telegram ID:</b> <code>{telegram_id}</code>\n\n"
-                "This Telegram ID already existed, so the rider profile was updated."
+                "This Telegram ID already existed, so the agent profile was updated."
             ),
             parse_mode="HTML",
             reply_markup=_admin_tools_keyboard(),
@@ -1038,7 +1038,7 @@ async def receive_delivery_agent_telegram_id(message: Message, state: FSMContext
     except IntegrityError:
         await session.rollback()
         await message.reply(
-            "A rider with this Telegram ID already exists. Open Admin Tools and update the existing rider."
+            "An agent with this Telegram ID already exists. Open Admin Tools and update the existing agent."
         )
         return
     await state.clear()
@@ -1192,9 +1192,9 @@ async def admin_delivery_set_agent(callback: CallbackQuery, session: AsyncSessio
             await callback.bot.send_message(
                 chat_id=int(delivery.order.buyer.telegram_id),
                 text=(
-                    "Your order has been assigned to a rider.\n\n"
+                    "Your order has been assigned to an agent.\n\n"
                     f"Order: #{delivery.order_id}\n"
-                    f"Rider: {agent.name}\n"
+                    f"Agent: {agent.name}\n"
                     f"Phone: {agent.phone or 'N/A'}\n\n"
                     "Tap Track Delivery for live status."
                 ),
@@ -1239,7 +1239,7 @@ async def admin_delivery_set_agent(callback: CallbackQuery, session: AsyncSessio
             await callback.message.answer(
                 (
                     "Assigned, but this agent has no Telegram ID on profile.\n"
-                    "Add Telegram ID to the agent to receive rider buttons."
+                    "Add Telegram ID to the agent to receive agent action buttons."
                 )
             )
 

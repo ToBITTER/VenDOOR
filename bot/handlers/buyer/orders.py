@@ -247,18 +247,18 @@ async def track_order(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
 
     delivery_status = order.delivery.status.value if order.delivery else "PENDING_ASSIGNMENT"
-    rider_name = "To be assigned"
-    rider_phone = "N/A"
+    agent_name = "To be assigned"
+    agent_phone = "N/A"
     if order.delivery and order.delivery.agent:
-        rider_name = order.delivery.agent.name or "Assigned"
-        rider_phone = order.delivery.agent.phone or "N/A"
+        agent_name = order.delivery.agent.name or "Assigned"
+        agent_phone = order.delivery.agent.phone or "N/A"
 
     text = (
         f"<b>Track Order #{order.id}</b>\n\n"
         f"<b>Item:</b> {order.listing.title if order.listing else 'Unknown listing'}\n"
         f"<b>Delivery Status:</b> {delivery_status}\n"
-        f"<b>Rider:</b> {rider_name}\n"
-        f"<b>Phone:</b> {rider_phone}\n"
+        f"<b>Agent:</b> {agent_name}\n"
+        f"<b>Phone:</b> {agent_phone}\n"
     )
     if order.delivery and order.delivery.current_location_note:
         text += f"<b>Latest Location Note:</b> {order.delivery.current_location_note}\n"

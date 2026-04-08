@@ -1193,9 +1193,9 @@ async def assign_delivery_agent(
             await app.state.bot.send_message(
                 chat_id=int(buyer.telegram_id),
                 text=(
-                    "Your order has been assigned to a rider.\n\n"
+                    "Your order has been assigned to an agent.\n\n"
                     f"Order: #{delivery.order_id}\n"
-                    f"Rider: {agent.name}\n"
+                    f"Agent: {agent.name}\n"
                     f"Phone: {agent.phone or 'N/A'}\n\n"
                     "Tap the button below to track updates."
                 ),

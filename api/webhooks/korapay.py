@@ -305,7 +305,7 @@ async def _handle_payment_success(
                         "Payment received successfully.\n\n"
                         f"Order: #{order.id}\n"
                         f"Seller contact: {seller_contact}\n\n"
-                        "Next step: we assign a rider and send you tracking."
+                        "Next step: we assign an agent and send you tracking."
                     ),
                 )
             except Exception:
@@ -454,7 +454,7 @@ async def _handle_cart_payment_success(
                 text=(
                     "Payment received successfully.\n\n"
                     f"{len(pending_orders)} order(s) confirmed.\n"
-                    "Next step: we assign rider(s) and send you tracking."
+                    "Next step: we assign agent(s) and send you tracking."
                 ),
             )
         except Exception:

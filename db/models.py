@@ -366,7 +366,7 @@ class CartItem(Base):
 
 
 class DeliveryAgent(Base):
-    """Delivery rider/agent account managed by admin."""
+    """Delivery agent account managed by admin."""
     __tablename__ = "delivery_agents"
 
     id: Mapped[int] = mapped_column(primary_key=True)

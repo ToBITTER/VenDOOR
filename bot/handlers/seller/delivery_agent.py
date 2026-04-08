@@ -129,7 +129,7 @@ async def delivery_hub(callback: CallbackQuery, session: AsyncSession):
     if not agent:
         await _safe_edit_or_reply(
             callback,
-            "<b>Delivery Hub</b>\n\nYou are not yet a delivery agent.\nTap below to create your rider profile.",
+            "<b>Delivery Hub</b>\n\nYou are not yet a delivery agent.\nTap below to create your agent profile.",
             parse_mode="HTML",
             reply_markup=_delivery_hub_keyboard(is_agent=False),
         )
@@ -138,7 +138,7 @@ async def delivery_hub(callback: CallbackQuery, session: AsyncSession):
     if not agent.is_active:
         await _safe_edit_or_reply(
             callback,
-            "<b>Delivery Hub</b>\n\nYour rider profile is pending activation by admin.",
+            "<b>Delivery Hub</b>\n\nYour agent profile is pending activation by admin.",
             parse_mode="HTML",
             reply_markup=_delivery_hub_keyboard(is_agent=True),
         )
@@ -206,7 +206,7 @@ async def delivery_agent_signup_start(callback: CallbackQuery, state: FSMContext
         if existing.is_active:
             await _safe_edit_or_reply(
                 callback,
-                "You already have an active rider profile. Open Delivery Hub to see jobs.",
+                "You already have an active agent profile. Open Delivery Hub to see jobs.",
                 reply_markup=_delivery_hub_keyboard(is_agent=True),
             )
         else:
@@ -220,7 +220,7 @@ async def delivery_agent_signup_start(callback: CallbackQuery, state: FSMContext
     await state.set_state(DeliveryAgentStates.awaiting_profile_name)
     await _safe_edit_or_reply(
         callback,
-        "Great, let's set up your rider profile.\n\nSend your full name:",
+        "Great, let's set up your agent profile.\n\nSend your full name:",
         reply_markup=_cancel_keyboard(),
     )
 
@@ -233,7 +233,11 @@ async def delivery_agent_signup_name(message: Message, state: FSMContext):
         return
     await state.update_data(name=name)
     await state.set_state(DeliveryAgentStates.awaiting_profile_phone)
-    await message.answer("Send your phone number (or type `skip`).", parse_mode="Markdown")
+    await message.answer(
+        "Send your phone number (or type `skip`).",
+        parse_mode="Markdown",
+        reply_markup=_cancel_keyboard(),
+    )
 
 
 @router.message(DeliveryAgentStates.awaiting_profile_phone)
@@ -243,7 +247,11 @@ async def delivery_agent_signup_phone(message: Message, state: FSMContext):
         phone = ""
     await state.update_data(phone=phone)
     await state.set_state(DeliveryAgentStates.awaiting_profile_vehicle)
-    await message.answer("What vehicle do you use? (bike / bicycle / car, or type `skip`)", parse_mode="Markdown")
+    await message.answer(
+        "What vehicle do you use? (bike / bicycle / car, or type `skip`)",
+        parse_mode="Markdown",
+        reply_markup=_cancel_keyboard(),
+    )
 
 
 @router.message(DeliveryAgentStates.awaiting_profile_vehicle)
@@ -275,17 +283,18 @@ async def delivery_agent_signup_vehicle(message: Message, state: FSMContext, ses
     except IntegrityError:
         await session.rollback()
         await state.clear()
-        await message.answer("This Telegram account is already linked to a rider profile.")
+        await message.answer("This Telegram account is already linked to an agent profile.")
         return
 
     await state.clear()
     await message.answer(
         (
-            "<b>Rider Profile Created</b>\n\n"
+            "<b>Agent Profile Created</b>\n\n"
             "You're now set as a delivery agent.\n"
             "Use Delivery Hub from the main menu to view jobs and action buttons."
         ),
         parse_mode="HTML",
+        reply_markup=_delivery_hub_keyboard(is_agent=True),
     )
 
 
@@ -319,7 +328,11 @@ async def delivery_open_job(callback: CallbackQuery, session: AsyncSession):
     if delivery.status in (DeliveryStatus.ASSIGNED, DeliveryStatus.PENDING_ASSIGNMENT):
         delivery_orders = sorted(delivery.delivery_orders or [], key=lambda item: (item.sequence, item.id))
         if not delivery_orders:
-            await _safe_edit_or_reply(callback, "No orders attached to this delivery yet.")
+            await _safe_edit_or_reply(
+                callback,
+                "No order assigned to this delivery yet. Please refresh from Delivery Hub.",
+                reply_markup=_delivery_hub_keyboard(is_agent=True),
+            )
             return
         await _safe_edit_or_reply(
             callback,
@@ -352,14 +365,18 @@ async def delivery_open_job(callback: CallbackQuery, session: AsyncSession):
         )
         return
 
-    await _safe_edit_or_reply(callback, f"Delivery is currently {delivery.status.value}.")
+    await _safe_edit_or_reply(
+        callback,
+        f"Delivery is currently {delivery.status.value}.",
+        reply_markup=_delivery_hub_keyboard(is_agent=True),
+    )
 
 
 def _arrival_keyboard(delivery_id: int, delivery_order_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="I am here", callback_data=f"delivery_arrived_{delivery_order_id}")],
-            [InlineKeyboardButton(text="Cancel", callback_data=f"delivery_cancel_{delivery_id}")],
+            [InlineKeyboardButton(text="Back to Hub", callback_data="delivery_hub")],
         ]
     )
 
@@ -369,7 +386,7 @@ def _delivery_progress_keyboard(delivery_id: int, stage: str) -> InlineKeyboardM
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="Mark In Transit", callback_data=f"delivery_in_transit_{delivery_id}")],
-                [InlineKeyboardButton(text="Cancel", callback_data=f"delivery_cancel_{delivery_id}")],
+                [InlineKeyboardButton(text="Back to Hub", callback_data="delivery_hub")],
             ]
         )
     if stage == "in_transit":
@@ -377,14 +394,20 @@ def _delivery_progress_keyboard(delivery_id: int, stage: str) -> InlineKeyboardM
             inline_keyboard=[
                 [InlineKeyboardButton(text="Update Location", callback_data=f"delivery_location_{delivery_id}")],
                 [InlineKeyboardButton(text="Mark Delivered", callback_data=f"delivery_delivered_{delivery_id}")],
+                [InlineKeyboardButton(text="Back to Hub", callback_data="delivery_hub")],
             ]
         )
-    return InlineKeyboardMarkup(inline_keyboard=[])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Back to Hub", callback_data="delivery_hub")]]
+    )
 
 
 def _cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Cancel", callback_data="delivery_cancel_workflow")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Cancel Workflow", callback_data="delivery_cancel_workflow")],
+            [InlineKeyboardButton(text="Back to Hub", callback_data="delivery_hub")],
+        ]
     )
 
 
@@ -501,11 +524,22 @@ async def delivery_start_pickup(callback: CallbackQuery, state: FSMContext, sess
         await safe_answer_callback(callback, "Not assigned to this delivery", show_alert=True)
         return
 
+    await _ensure_delivery_order_link(session, delivery)
+    await session.commit()
+    delivery = await get_delivery_with_orders(delivery_id, session)
+    if not delivery:
+        await safe_answer_callback(callback, "Delivery not found", show_alert=True)
+        return
+
     await safe_answer_callback(callback)
 
     delivery_orders = sorted(delivery.delivery_orders or [], key=lambda item: (item.sequence, item.id))
     if not delivery_orders:
-        await _safe_edit_or_reply(callback, "No orders found in this delivery.")
+        await _safe_edit_or_reply(
+            callback,
+            "No order assigned to this delivery yet. Please refresh from Delivery Hub.",
+            reply_markup=_delivery_hub_keyboard(is_agent=True),
+        )
         return
 
     await state.update_data(
@@ -722,7 +756,7 @@ async def delivery_mark_delivered(callback: CallbackQuery, state: FSMContext, se
         callback,
         "<b>Delivery Completed</b>\n\nThank you for the update.",
         parse_mode="HTML",
-        reply_markup=None,
+        reply_markup=_delivery_hub_keyboard(is_agent=True),
     )
 
 
@@ -731,4 +765,8 @@ async def delivery_mark_delivered(callback: CallbackQuery, state: FSMContext, se
 async def delivery_cancel_workflow(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await safe_answer_callback(callback, "Delivery workflow cancelled.")
-    await _safe_edit_or_reply(callback, "Workflow cancelled. Open your delivery card to resume.")
+    await _safe_edit_or_reply(
+        callback,
+        "Workflow cancelled. You can reopen any job from Delivery Hub.",
+        reply_markup=_delivery_hub_keyboard(is_agent=True),
+    )
