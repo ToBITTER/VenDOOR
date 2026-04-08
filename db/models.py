@@ -254,6 +254,9 @@ class Order(Base):
     # Escrow & Release
     escrow_released_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     auto_release_scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    seller_payout_ref: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True)
+    seller_payout_status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
+    seller_payout_attempted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

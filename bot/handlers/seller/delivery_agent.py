@@ -12,10 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from db.models import Delivery, DeliveryAgent, DeliveryOrder, DeliveryStatus, Order, SellerProfile
+from core.config import get_settings
 from services.delivery_notifications import notify_buyer_delivery_status_update
 from services.delivery_status import update_delivery_order_status, update_delivery_status
 
 router = Router()
+settings = get_settings()
 
 
 class DeliveryAgentStates(StatesGroup):
@@ -275,7 +277,7 @@ async def delivery_agent_signup_vehicle(message: Message, state: FSMContext, ses
         telegram_id=telegram_id,
         phone=phone,
         vehicle_type=vehicle_type,
-        is_active=True,
+        is_active=settings.delivery_agent_self_signup_auto_activate,
     )
     session.add(agent)
     try:
@@ -290,8 +292,12 @@ async def delivery_agent_signup_vehicle(message: Message, state: FSMContext, ses
     await message.answer(
         (
             "<b>Agent Profile Created</b>\n\n"
-            "You're now set as a delivery agent.\n"
+            "Your profile is active.\n"
             "Use Delivery Hub from the main menu to view jobs and action buttons."
+            if settings.delivery_agent_self_signup_auto_activate
+            else "<b>Agent Profile Created</b>\n\n"
+            "Your profile is pending admin activation.\n"
+            "You'll see jobs as soon as activation is approved."
         ),
         parse_mode="HTML",
         reply_markup=_delivery_hub_keyboard(is_agent=True),
@@ -409,6 +415,35 @@ def _cancel_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Back to Hub", callback_data="delivery_hub")],
         ]
     )
+
+
+def _parse_manual_location_input(text: str) -> tuple[Decimal | None, Decimal | None, str | None]:
+    """
+    Accept either:
+    - "lat,lon"
+    - "lat,lon | note"
+    - free text note only (manual location description)
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None, None, None
+
+    parts = [segment.strip() for segment in raw.split("|", 1)]
+    location_part = parts[0]
+    note = parts[1] if len(parts) == 2 and parts[1] else None
+
+    if "," in location_part:
+        maybe_coords = [token.strip() for token in location_part.split(",", 1)]
+        try:
+            lat = Decimal(maybe_coords[0])
+            lon = Decimal(maybe_coords[1])
+            if Decimal("-90") <= lat <= Decimal("90") and Decimal("-180") <= lon <= Decimal("180"):
+                return lat, lon, note
+        except Exception:
+            pass
+
+    # Manual text note only
+    return None, None, raw
 
 
 def _pickup_stop_text(order: Order, step_num: int, total_steps: int) -> str:
@@ -676,7 +711,14 @@ async def delivery_send_location(callback: CallbackQuery, state: FSMContext):
     await safe_answer_callback(callback)
     await _safe_edit_or_reply(
         callback,
-        "<b>Send Location</b>\n\nShare your current location from the Telegram attachment menu.",
+        (
+            "<b>Update Location</b>\n\n"
+            "Send your location manually as text.\n\n"
+            "Examples:\n"
+            "6.5244,3.3792\n"
+            "6.5244,3.3792 | Near Main Gate\n"
+            "Near Hall A, Block 2"
+        ),
         parse_mode="HTML",
         reply_markup=_cancel_keyboard(),
     )
@@ -686,10 +728,10 @@ async def delivery_send_location(callback: CallbackQuery, state: FSMContext):
 
 @router.message(DeliveryAgentStates.awaiting_delivery_location)
 async def receive_delivery_location(message: Message, state: FSMContext, session: AsyncSession):
-    """Agent sends location; update delivery coordinates."""
+    """Agent sends manual location text; update delivery coordinates or note."""
 
-    if not message.location:
-        await message.reply("Please share your location. Type /cancel to abort.")
+    if not (message.text and message.text.strip()):
+        await message.reply("Please type location text. Example: 6.5244,3.3792 | Near Main Gate")
         return
 
     data = await state.get_data()
@@ -699,14 +741,16 @@ async def receive_delivery_location(message: Message, state: FSMContext, session
         await message.reply("Location session expired. Please restart from your delivery card.")
         return
 
-    latitude = Decimal(str(message.location.latitude))
-    longitude = Decimal(str(message.location.longitude))
+    latitude, longitude, note_text = _parse_manual_location_input(message.text)
+    if latitude is None and longitude is None and not note_text:
+        await message.reply("Invalid location format. Example: 6.5244,3.3792 | Near Main Gate")
+        return
 
     await update_delivery_status(
         int(delivery_id),
         DeliveryStatus.IN_TRANSIT,
         "AGENT",
-        "Location update",
+        note_text or "Manual location update",
         session,
         latitude=latitude,
         longitude=longitude,

@@ -44,6 +44,11 @@ Before deployment, set these environment variables in Render:
 | `ALLOWED_HOSTS` | Will be auto-configured | No |
 | `API_HOST` | Will be auto-configured | No |
 | `ESCROW_RELEASE_HOURS` | `48` | No (defaults to 48) |
+| `DELIVERY_AGENT_SELF_SIGNUP_AUTO_ACTIVATE` | `false` | No (recommended false in production) |
+
+Security note:
+- Never commit real secrets (`.env`) to GitHub.
+- Use `.env.example` for shared setup and keep production keys only in Render environment variables.
 
 ### 4. Deploy
 

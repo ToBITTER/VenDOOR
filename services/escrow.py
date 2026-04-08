@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from db.models import Order, OrderStatus, SellerProfile
-from services.korapay import get_korapay_client
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +27,10 @@ class EscrowService:
         Seller receives the base component.
         """
         return (Decimal(order_amount) / Decimal("1.05")).quantize(Decimal("0.01"))
+
+    @staticmethod
+    def _build_payout_reference(order_id: int) -> str:
+        return f"VENDOOR_PAYOUT_{order_id}"
 
     @staticmethod
     async def release_escrow(order_id: int, session: AsyncSession) -> bool:
@@ -85,7 +88,13 @@ class EscrowService:
                 or f"seller{seller.id}@vendoor.local"
             )
             payout_amount = EscrowService._seller_payout_amount(order.amount)
-            payout_reference = f"VENDOOR_PAYOUT_{order.id}"
+            payout_reference = order.seller_payout_ref or EscrowService._build_payout_reference(order.id)
+            order.seller_payout_ref = payout_reference
+            order.seller_payout_attempted_at = datetime.utcnow()
+            order.seller_payout_status = "initiating"
+            await session.flush()
+
+            from services.korapay import get_korapay_client
 
             korapay = get_korapay_client()
             payout_result = await korapay.disburse_to_bank_account(
@@ -100,6 +109,7 @@ class EscrowService:
             )
 
             if not payout_result.ok:
+                order.seller_payout_status = payout_result.status or "failed"
                 logger.error(
                     "Payout failed for order %s ref=%s status=%s message=%s",
                     order.id,
@@ -107,12 +117,13 @@ class EscrowService:
                     payout_result.status,
                     payout_result.message,
                 )
-                await session.rollback()
+                await session.commit()
                 return False
 
             order.status = OrderStatus.COMPLETED
             order.escrow_released_at = datetime.utcnow()
             order.auto_release_scheduled_at = None
+            order.seller_payout_status = payout_result.status or "queued"
             await session.commit()
 
             logger.info(

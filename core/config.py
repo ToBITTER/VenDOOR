@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     bot_webhook_url: str | None = None
     telegram_webhook_secret: str | None = None
     escrow_release_hours: int = 48
+    delivery_agent_self_signup_auto_activate: bool = False
 
     # Admin Settings
     admin_telegram_id: str | None = None

@@ -29,6 +29,7 @@ from db.models import (
     DeliveryStatus,
     Listing,
     Order,
+    OrderStatus,
     SellerProfile,
     User,
 )
@@ -102,20 +103,43 @@ def _actions_keyboard(seller_id: int) -> InlineKeyboardMarkup:
 def _admin_tools_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Stats", callback_data="admin_stats")],
-            [InlineKeyboardButton(text="Vendors", callback_data="admin_vendors")],
-            [InlineKeyboardButton(text="Transactions", callback_data="admin_transactions")],
-            [InlineKeyboardButton(text="Listings", callback_data="admin_listings")],
-            [InlineKeyboardButton(text="Delivery Agents", callback_data="admin_delivery_agents")],
-            [InlineKeyboardButton(text="Add Delivery Agent", callback_data="admin_delivery_agent_add")],
-            [InlineKeyboardButton(text="Assign Delivery", callback_data="admin_delivery_assign_picker")],
-            [InlineKeyboardButton(text="Track Deliveries", callback_data="admin_delivery_tracking")],
-            [InlineKeyboardButton(text="Pending Sellers", callback_data="admin_pending_refresh")],
-            [InlineKeyboardButton(text="Vendor Privileges", callback_data="admin_privileges_help")],
-            [InlineKeyboardButton(text="Broadcast", callback_data="admin_broadcast_help")],
+            [
+                InlineKeyboardButton(text="Stats", callback_data="admin_stats"),
+                InlineKeyboardButton(text="Transactions", callback_data="admin_transactions"),
+            ],
+            [
+                InlineKeyboardButton(text="Payouts", callback_data="admin_payouts"),
+                InlineKeyboardButton(text="Listings", callback_data="admin_listings"),
+            ],
+            [
+                InlineKeyboardButton(text="Vendors", callback_data="admin_vendors"),
+                InlineKeyboardButton(text="Pending Sellers", callback_data="admin_pending_refresh"),
+            ],
+            [
+                InlineKeyboardButton(text="Delivery Agents", callback_data="admin_delivery_agents"),
+                InlineKeyboardButton(text="Add Agent", callback_data="admin_delivery_agent_add"),
+            ],
+            [
+                InlineKeyboardButton(text="Assign Delivery", callback_data="admin_delivery_assign_picker"),
+                InlineKeyboardButton(text="Track Deliveries", callback_data="admin_delivery_tracking"),
+            ],
+            [
+                InlineKeyboardButton(text="Vendor Privileges", callback_data="admin_privileges_help"),
+                InlineKeyboardButton(text="Broadcast", callback_data="admin_broadcast_help"),
+            ],
+            [InlineKeyboardButton(text="Danger Zone", callback_data="admin_danger_tools")],
+            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
+def _danger_tools_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [InlineKeyboardButton(text="Delete Listing", callback_data="admin_delete_help_listing")],
             [InlineKeyboardButton(text="Delete Vendor", callback_data="admin_delete_help_vendor")],
             [InlineKeyboardButton(text="Delete User", callback_data="admin_delete_help_user")],
+            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
             [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
         ]
     )
@@ -337,6 +361,39 @@ async def _render_transactions_text(session: AsyncSession, limit: int = 10) -> s
             f"<b>Buyer:</b> {buyer_name} | <b>Seller:</b> {seller_name}\n"
             f"<b>Listing:</b> {title}\n\n"
         )
+    return text
+
+
+async def _render_payouts_text(session: AsyncSession, limit: int = 15) -> str:
+    result = await session.execute(
+        select(Order)
+        .options(
+            joinedload(Order.seller).joinedload(SellerProfile.user),
+            joinedload(Order.buyer),
+        )
+        .order_by(Order.updated_at.desc())
+        .limit(limit)
+    )
+    orders = result.scalars().all()
+    if not orders:
+        return "<b>Payout Monitor</b>\n\nNo orders found."
+
+    text = "<b>Payout Monitor (latest 15)</b>\n\n"
+    for order in orders:
+        if not (order.seller_payout_ref or order.seller_payout_status or order.status in {OrderStatus.COMPLETED, OrderStatus.PAID}):
+            continue
+        seller_name = order.seller.user.first_name if order.seller and order.seller.user else "Unknown"
+        buyer_name = order.buyer.first_name if order.buyer else "Unknown"
+        text += (
+            f"<b>Order #{order.id}</b>\n"
+            f"Order status: {order.status.value}\n"
+            f"Payout ref: {order.seller_payout_ref or 'N/A'}\n"
+            f"Payout status: {order.seller_payout_status or 'N/A'}\n"
+            f"Attempted at: {order.seller_payout_attempted_at.strftime('%Y-%m-%d %H:%M') if order.seller_payout_attempted_at else 'N/A'}\n"
+            f"Buyer: {buyer_name} | Seller: {seller_name}\n\n"
+        )
+    if text.strip() == "<b>Payout Monitor (latest 15)</b>":
+        return "<b>Payout Monitor</b>\n\nNo payout records yet."
     return text
 
 
@@ -800,17 +857,16 @@ async def open_admin_tools(callback: CallbackQuery, state: FSMContext):
         "<b>Admin Tools</b>\n\n"
         "Available buttons:\n"
         "- Stats\n"
-        "- Vendors\n"
         "- Transactions\n"
+        "- Payouts\n"
+        "- Vendors\n"
         "- Listings\n"
+        "- Delivery Agents\n"
         "- Pending Sellers\n"
         "- Vendor Privileges\n"
         "- Broadcast\n\n"
-        "Delete commands:\n"
-        "<code>/delete_listing_LST-ABC12345</code>\n"
-        "<code>/delete_vendor_SEL-ABC12345</code>\n"
-        "<code>/delete_user_67</code>\n\n"
-        "Use IDs from admin lists before deleting."
+        "Danger Zone contains all delete actions.\n"
+        "Use IDs from admin lists before deleting records."
     )
     await safe_replace_with_screen(
         callback,
@@ -862,6 +918,39 @@ async def admin_transactions(callback: CallbackQuery, session: AsyncSession):
         text,
         parse_mode="HTML",
         reply_markup=_admin_tools_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_payouts")
+async def admin_payouts(callback: CallbackQuery, session: AsyncSession):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    text = await _render_payouts_text(session)
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_danger_tools")
+async def admin_danger_tools(callback: CallbackQuery):
+    if not _is_admin(callback.from_user.id):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        (
+            "<b>Danger Zone</b>\n\n"
+            "Use these actions carefully.\n"
+            "Delete actions are irreversible."
+        ),
+        parse_mode="HTML",
+        reply_markup=_danger_tools_keyboard(),
     )
 
 

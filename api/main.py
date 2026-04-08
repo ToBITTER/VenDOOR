@@ -785,6 +785,11 @@ async def list_all_transactions(
                 "quantity": order.quantity,
                 "amount": str(order.amount),
                 "transaction_ref": order.transaction_ref,
+                "seller_payout_ref": order.seller_payout_ref,
+                "seller_payout_status": order.seller_payout_status,
+                "seller_payout_attempted_at": (
+                    order.seller_payout_attempted_at.isoformat() if order.seller_payout_attempted_at else None
+                ),
                 "buyer": {
                     "user_id": order.buyer.id if order.buyer else None,
                     "telegram_id": order.buyer.telegram_id if order.buyer else None,
