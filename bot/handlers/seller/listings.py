@@ -17,7 +17,6 @@ from bot.keyboards.main_menu import get_main_menu_inline, get_seller_actions
 from db.models import AccessorySubcategory, Category, Listing, SellerProfile, User
 
 router = Router()
-MINIMUM_LISTING_PRICE = Decimal("500")
 
 
 def format_category_label(category: Category, accessory_subcategory: AccessorySubcategory | None = None) -> str:
@@ -291,10 +290,10 @@ async def handle_listing_quantity(message: Message, state: FSMContext):
 async def handle_listing_price(message: Message, state: FSMContext):
     try:
         price = Decimal((message.text or "").strip())
-        if price < MINIMUM_LISTING_PRICE:
+        if price <= 0:
             raise ValueError()
     except Exception:
-        await message.reply("Listing price must be at least NGN 500.")
+        await message.reply("Please enter a valid price greater than 0.")
         return
 
     buyer_price = (price * Decimal("1.05")).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
