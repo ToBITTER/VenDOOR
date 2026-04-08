@@ -13,7 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
-from bot.helpers.brand_assets import get_category_hero, get_empty_state
+from bot.helpers.brand_assets import get_category_hero, get_empty_state, get_welcome_banner
 from bot.helpers.telegram import (
     safe_answer_callback,
     safe_edit_text,
@@ -243,6 +243,15 @@ async def _show_category_page(
 async def browse_catalog(callback: CallbackQuery):
     await safe_answer_callback(callback)
     text = "Browse Catalog\n\nSelect a category to view available products:"
+    welcome_banner = get_welcome_banner()
+    if welcome_banner:
+        await safe_replace_with_screen(
+            callback,
+            text,
+            photo=welcome_banner,
+            reply_markup=get_catalog_categories(),
+        )
+        return
     await safe_render_text_screen(callback, text, reply_markup=get_catalog_categories())
 
 

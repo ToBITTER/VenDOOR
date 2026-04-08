@@ -17,6 +17,7 @@ MENU_DELIVERY = "Delivery Hub"
 MENU_LISTINGS = "My Listings"
 MENU_COMPLAINTS = "Complaints"
 MENU_HELP = "Help"
+MENU_TERMS = "Terms & Conditions"
 
 
 def get_main_menu_inline() -> InlineKeyboardMarkup:
@@ -36,6 +37,7 @@ def get_main_menu_inline() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text=MENU_COMPLAINTS, callback_data="complaints"),
                 InlineKeyboardButton(text=MENU_HELP, callback_data="help"),
             ],
+            [InlineKeyboardButton(text=MENU_TERMS, callback_data="terms_conditions")],
         ]
     )
     return keyboard
@@ -48,6 +50,7 @@ def get_main_menu_reply() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=MENU_ORDERS), KeyboardButton(text=MENU_SELLER)],
             [KeyboardButton(text=MENU_DELIVERY), KeyboardButton(text=MENU_LISTINGS)],
             [KeyboardButton(text=MENU_COMPLAINTS), KeyboardButton(text=MENU_HELP)],
+            [KeyboardButton(text=MENU_TERMS)],
         ],
         resize_keyboard=True,
         is_persistent=True,
