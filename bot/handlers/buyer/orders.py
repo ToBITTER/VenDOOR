@@ -2,8 +2,6 @@
 Buyer orders handler - view orders, confirm receipt, raise disputes.
 """
 
-from datetime import datetime
-
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from sqlalchemy import select
@@ -14,6 +12,7 @@ from bot.helpers.brand_assets import get_empty_state
 from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline, get_order_actions
 from db.models import Delivery, Order, OrderStatus, SellerProfile, User
+from services.escrow import get_escrow_service
 
 router = Router()
 
@@ -166,7 +165,11 @@ async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
         await safe_answer_callback(callback, text="User not found", show_alert=True)
         return
 
-    result = await session.execute(select(Order).where(Order.id == order_id))
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.seller).selectinload(SellerProfile.user))
+        .where(Order.id == order_id)
+    )
     order = result.scalars().first()
 
     if not order:
@@ -195,10 +198,31 @@ async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
 
     try:
-        order.status = OrderStatus.COMPLETED
-        order.escrow_released_at = datetime.utcnow()
+        escrow_service = get_escrow_service()
+        released = await escrow_service.release_escrow(order.id, session)
+        if not released:
+            await safe_replace_with_screen(
+                callback,
+                "Could not release seller payment right now. Please try again.",
+                reply_markup=get_main_menu_inline(),
+            )
+            return
+
         order.auto_release_scheduled_at = None
         await session.commit()
+
+        seller_user = order.seller.user if order.seller else None
+        if seller_user and seller_user.telegram_id:
+            try:
+                await callback.bot.send_message(
+                    chat_id=int(seller_user.telegram_id),
+                    text=(
+                        f"Order #{order.id} has been confirmed by the buyer.\n"
+                        f"Escrow released: NGN {order.amount:,.2f}."
+                    ),
+                )
+            except Exception:
+                pass
 
         await safe_replace_with_screen(
             callback,

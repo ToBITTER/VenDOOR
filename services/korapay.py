@@ -29,6 +29,17 @@ class KorapayReference:
     amount: Decimal
 
 
+@dataclass
+class KorapayPayoutResult:
+    """Response from creating a Korapay payout/disbursement."""
+
+    ok: bool
+    reference: str
+    status: str | None = None
+    message: str | None = None
+    raw: dict | None = None
+
+
 class KorapayClient:
     """
     Korapay API client for initiating and verifying payments.
@@ -217,6 +228,83 @@ class KorapayClient:
             logger.exception("Korapay verification error")
         
         return None
+
+    async def disburse_to_bank_account(
+        self,
+        *,
+        reference: str,
+        amount: Decimal,
+        bank_code: str,
+        account_number: str,
+        customer_name: str,
+        customer_email: str,
+        narration: str | None = None,
+        currency: str = "NGN",
+        metadata: dict | None = None,
+    ) -> KorapayPayoutResult:
+        """
+        Initiate payout/disbursement to a bank account.
+        Korapay docs: POST /merchant/api/v1/transactions/disburse
+        """
+        payload = {
+            "reference": reference,
+            "destination": {
+                "type": "bank_account",
+                "amount": float(amount),
+                "currency": currency,
+                "narration": narration or f"Escrow payout for {reference}",
+                "bank_account": {
+                    "bank": str(bank_code).strip(),
+                    "account": str(account_number).strip(),
+                },
+                "customer": {
+                    "name": (customer_name or "Seller").strip(),
+                    "email": (customer_email or "seller@vendoor.local").strip(),
+                },
+            },
+        }
+        if metadata:
+            payload["metadata"] = metadata
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.base_url}/transactions/disburse",
+                    json=payload,
+                    headers=self.headers,
+                    timeout=15.0,
+                )
+                data = response.json()
+                status_value = str(data.get("status")).lower() if isinstance(data, dict) else None
+                is_ok = self._is_success_status(data.get("status")) if isinstance(data, dict) else False
+
+                if not response.is_success or not is_ok:
+                    logger.error(
+                        "Korapay disbursement failed status_code=%s response=%s reference=%s",
+                        response.status_code,
+                        response.text[:1200],
+                        reference,
+                    )
+                    return KorapayPayoutResult(
+                        ok=False,
+                        reference=reference,
+                        status=status_value,
+                        message=(data.get("message") if isinstance(data, dict) else "payout_failed"),
+                        raw=data if isinstance(data, dict) else None,
+                    )
+
+                payout_data = data.get("data") if isinstance(data, dict) else {}
+                payout_status = str((payout_data or {}).get("status") or "").strip().lower() or None
+                return KorapayPayoutResult(
+                    ok=True,
+                    reference=str((payout_data or {}).get("reference") or reference),
+                    status=payout_status,
+                    message=data.get("message") if isinstance(data, dict) else None,
+                    raw=data if isinstance(data, dict) else None,
+                )
+        except Exception:
+            logger.exception("Korapay disbursement exception for reference=%s", reference)
+            return KorapayPayoutResult(ok=False, reference=reference, status="error", message="exception")
     
     def verify_webhook_signature(self, payload: dict | str | bytes, signature: str) -> bool:
         """

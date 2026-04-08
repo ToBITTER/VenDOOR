@@ -114,6 +114,14 @@ Before deployment, set these environment variables in Render:
 - Verify `KORAPAY_PUBLIC_KEY` and `KORAPAY_SECRET_KEY` are correct
 - Test payment webhook in Korapay dashboard
 
+#### Seller payout (disbursement) not completing
+- Confirm seller profile has valid `bank_code`, `account_number`, and `account_name`
+- Check API logs for `Korapay disbursement failed` messages
+- Ensure payout endpoint path is available on your Korapay account:
+  - `POST /merchant/api/v1/transactions/disburse`
+- Make sure the same order is not retried manually with a new payout reference.
+  VenDOOR uses deterministic references (`VENDOOR_PAYOUT_<order_id>`) for safety.
+
 #### Celery tasks not running
 - Check `vendoor-worker` logs
 - Check `vendoor-beat` logs for scheduler status
