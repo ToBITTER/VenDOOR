@@ -1,6 +1,6 @@
 """Add seller payout tracking fields on orders.
 
-Revision ID: 013_add_order_payout_tracking_fields
+Revision ID: 013_payout_tracking
 Revises: add_webhook_receipts_table
 Create Date: 2026-04-08 13:30:00.000000
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = "013_add_order_payout_tracking_fields"
+revision = "013_payout_tracking"
 down_revision = "add_webhook_receipts_table"
 branch_labels = None
 depends_on = None

@@ -1,7 +1,7 @@
 """Add admin_users table for super/ops admin roles.
 
 Revision ID: 014_add_admin_users_table
-Revises: 013_add_order_payout_tracking_fields
+Revises: 013_payout_tracking
 Create Date: 2026-04-08 16:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "014_add_admin_users_table"
-down_revision = "013_add_order_payout_tracking_fields"
+down_revision = "013_payout_tracking"
 branch_labels = None
 depends_on = None
 
