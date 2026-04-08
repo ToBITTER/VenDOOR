@@ -23,6 +23,8 @@ from sqlalchemy.orm import joinedload
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text, safe_replace_with_screen
 from core.config import get_settings
 from db.models import (
+    AdminRole,
+    AdminUser,
     Delivery,
     DeliveryAgent,
     DeliveryOrder,
@@ -60,12 +62,28 @@ class AdminStates(StatesGroup):
     awaiting_delivery_agent_phone = State()
     awaiting_delivery_agent_vehicle = State()
     awaiting_delivery_agent_telegram_id = State()
+    awaiting_ops_admin_telegram_id = State()
 
 
-def _is_admin(telegram_user_id: int) -> bool:
-    if not settings.admin_telegram_id:
-        return False
-    return str(telegram_user_id) == str(settings.admin_telegram_id)
+def _is_super_admin_id(telegram_user_id: int) -> bool:
+    return bool(settings.admin_telegram_id) and str(telegram_user_id) == str(settings.admin_telegram_id)
+
+
+async def _admin_role(telegram_user_id: int, session: AsyncSession) -> AdminRole | None:
+    if _is_super_admin_id(telegram_user_id):
+        return AdminRole.SUPER_ADMIN
+    result = await session.execute(select(AdminUser).where(AdminUser.telegram_id == str(telegram_user_id)))
+    admin_user = result.scalars().first()
+    return admin_user.role if admin_user else None
+
+
+async def _is_admin(telegram_user_id: int, session: AsyncSession) -> bool:
+    return (await _admin_role(telegram_user_id, session)) is not None
+
+
+async def _is_super_admin(telegram_user_id: int, session: AsyncSession) -> bool:
+    role = await _admin_role(telegram_user_id, session)
+    return role == AdminRole.SUPER_ADMIN
 
 
 def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
@@ -127,6 +145,7 @@ def _admin_tools_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Vendor Privileges", callback_data="admin_privileges_help"),
                 InlineKeyboardButton(text="Broadcast", callback_data="admin_broadcast_help"),
             ],
+            [InlineKeyboardButton(text="Ops Admins", callback_data="admin_ops_admins")],
             [InlineKeyboardButton(text="Danger Zone", callback_data="admin_danger_tools")],
             [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
         ]
@@ -483,6 +502,42 @@ async def _render_delivery_tracking_text(session: AsyncSession, limit: int = 20)
     return text
 
 
+async def _render_ops_admins_text(session: AsyncSession, limit: int = 50) -> str:
+    result = await session.execute(
+        select(AdminUser).order_by(AdminUser.created_at.desc()).limit(limit)
+    )
+    admins = result.scalars().all()
+    text = "<b>Ops Admins</b>\n\n"
+    if not admins:
+        text += "No ops admins added yet.\n"
+    else:
+        for admin_user in admins:
+            text += (
+                f"ID: <code>{admin_user.telegram_id}</code>\n"
+                f"Role: {admin_user.role.value}\n"
+                f"Added: {admin_user.created_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+            )
+    text += f"Super Admin ID: <code>{settings.admin_telegram_id or 'N/A'}</code>"
+    return text
+
+
+def _ops_admins_keyboard(admins: list[AdminUser]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([InlineKeyboardButton(text="Add Ops Admin", callback_data="admin_ops_add")])
+    for admin_user in admins:
+        if admin_user.role == AdminRole.OPS_ADMIN:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"Remove {admin_user.telegram_id}",
+                        callback_data=f"admin_ops_remove_{admin_user.id}",
+                    )
+                ]
+            )
+    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _delivery_assign_pick_keyboard(deliveries: list[Delivery]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for delivery in deliveries:
@@ -578,8 +633,8 @@ async def _send_broadcast(
 
 
 @router.message(Command("admin_tools"))
-async def admin_tools(message: Message, state: FSMContext):
-    if not _is_admin(message.from_user.id):
+async def admin_tools(message: Message, state: FSMContext, session: AsyncSession):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         return
     await state.clear()
@@ -599,7 +654,7 @@ async def admin_tools(message: Message, state: FSMContext):
 
 @router.message(Command("pending_sellers"))
 async def pending_sellers(message: Message, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         return
 
@@ -609,7 +664,7 @@ async def pending_sellers(message: Message, session: AsyncSession):
 
 @router.message(F.text.regexp(r"^/review_seller_([A-Za-z0-9\-]+)$"))
 async def review_seller(message: Message, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         return
 
@@ -658,7 +713,7 @@ async def review_seller(message: Message, session: AsyncSession):
 
 @router.message(F.text.regexp(r"^/delete_listing_([A-Za-z0-9\-]+)$"))
 async def delete_listing_by_command(message: Message, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         return
 
@@ -684,7 +739,7 @@ async def delete_listing_by_command(message: Message, session: AsyncSession):
 
 @router.message(F.text.regexp(r"^/delete_vendor_([A-Za-z0-9\-]+)$"))
 async def delete_vendor_by_command(message: Message, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         return
 
@@ -710,7 +765,7 @@ async def delete_vendor_by_command(message: Message, session: AsyncSession):
 
 @router.message(F.text.regexp(r"^/delete_user_(\d+)$"))
 async def delete_user_by_command(message: Message, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         return
 
@@ -747,7 +802,7 @@ async def delete_user_by_command(message: Message, session: AsyncSession):
 
 @router.message(F.text.regexp(r"^/set_vendor_privilege_([A-Za-z0-9\-]+)_(0|1)_(\d{1,3})$"))
 async def set_vendor_privilege(message: Message, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         return
 
@@ -780,7 +835,7 @@ async def set_vendor_privilege(message: Message, session: AsyncSession):
 
 @router.message(F.text.regexp(r"^/broadcast_(all|buyers|sellers|verified_sellers)\s+([\s\S]+)$"))
 async def broadcast_from_admin_chat(message: Message, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         return
 
@@ -847,8 +902,8 @@ async def broadcast_from_admin_chat(message: Message, session: AsyncSession):
 
 
 @router.callback_query(F.data == "admin_tools_open")
-async def open_admin_tools(callback: CallbackQuery, state: FSMContext):
-    if not _is_admin(callback.from_user.id):
+async def open_admin_tools(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -878,7 +933,7 @@ async def open_admin_tools(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -893,7 +948,7 @@ async def admin_stats(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data == "admin_vendors")
 async def admin_vendors(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -908,7 +963,7 @@ async def admin_vendors(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data == "admin_transactions")
 async def admin_transactions(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -923,7 +978,7 @@ async def admin_transactions(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data == "admin_payouts")
 async def admin_payouts(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -937,8 +992,8 @@ async def admin_payouts(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.callback_query(F.data == "admin_danger_tools")
-async def admin_danger_tools(callback: CallbackQuery):
-    if not _is_admin(callback.from_user.id):
+async def admin_danger_tools(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -954,9 +1009,97 @@ async def admin_danger_tools(callback: CallbackQuery):
     )
 
 
+@router.callback_query(F.data == "admin_ops_admins")
+async def admin_ops_admins(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    if not await _is_super_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Only super admin can manage ops admins.", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await state.clear()
+    result = await session.execute(select(AdminUser).order_by(AdminUser.created_at.desc()).limit(50))
+    admins = result.scalars().all()
+    text = await _render_ops_admins_text(session)
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_ops_admins_keyboard(admins),
+    )
+
+
+@router.callback_query(F.data == "admin_ops_add")
+async def admin_ops_add(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    if not await _is_super_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Only super admin can add ops admins.", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await state.set_state(AdminStates.awaiting_ops_admin_telegram_id)
+    await safe_replace_with_screen(
+        callback,
+        "Send Telegram ID to grant ops admin access.",
+        reply_markup=_delete_help_keyboard(),
+    )
+
+
+@router.message(AdminStates.awaiting_ops_admin_telegram_id)
+async def admin_ops_add_receive_id(message: Message, session: AsyncSession, state: FSMContext):
+    if not await _is_super_admin(message.from_user.id, session):
+        await state.clear()
+        await message.reply("Only super admin can add ops admins.")
+        return
+
+    telegram_id = (message.text or "").strip()
+    if not telegram_id.isdigit():
+        await message.reply("Send a valid numeric Telegram ID.")
+        return
+    if str(telegram_id) == str(settings.admin_telegram_id):
+        await message.reply("This ID is already super admin.")
+        return
+
+    result = await session.execute(select(AdminUser).where(AdminUser.telegram_id == telegram_id))
+    existing = result.scalars().first()
+    if existing:
+        existing.role = AdminRole.OPS_ADMIN
+    else:
+        session.add(AdminUser(telegram_id=telegram_id, role=AdminRole.OPS_ADMIN))
+    await session.commit()
+    await state.clear()
+    await message.reply(f"Ops admin added: {telegram_id}")
+
+
+@router.callback_query(F.data.startswith("admin_ops_remove_"))
+async def admin_ops_remove(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_super_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Only super admin can remove ops admins.", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    admin_id = _callback_int_suffix(callback.data, "admin_ops_remove_")
+    if admin_id is None:
+        await safe_edit_text(callback, "Invalid ops admin payload.", reply_markup=_admin_tools_keyboard())
+        return
+    admin_user = await session.get(AdminUser, admin_id)
+    if not admin_user:
+        await safe_edit_text(callback, "Ops admin not found.", reply_markup=_admin_tools_keyboard())
+        return
+    await session.delete(admin_user)
+    await session.commit()
+    result = await session.execute(select(AdminUser).order_by(AdminUser.created_at.desc()).limit(50))
+    admins = result.scalars().all()
+    text = await _render_ops_admins_text(session)
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_ops_admins_keyboard(admins),
+    )
+
+
 @router.callback_query(F.data == "admin_listings")
 async def admin_listings(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -971,7 +1114,7 @@ async def admin_listings(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data == "admin_delivery_agents")
 async def admin_delivery_agents(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -985,8 +1128,8 @@ async def admin_delivery_agents(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.callback_query(F.data == "admin_delivery_agent_add")
-async def admin_delivery_agent_add(callback: CallbackQuery, state: FSMContext):
-    if not _is_admin(callback.from_user.id):
+async def admin_delivery_agent_add(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1001,8 +1144,8 @@ async def admin_delivery_agent_add(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminStates.awaiting_delivery_agent_name)
-async def receive_delivery_agent_name(message: Message, state: FSMContext):
-    if not _is_admin(message.from_user.id):
+async def receive_delivery_agent_name(message: Message, state: FSMContext, session: AsyncSession):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         await state.clear()
         return
@@ -1018,8 +1161,8 @@ async def receive_delivery_agent_name(message: Message, state: FSMContext):
 
 
 @router.message(AdminStates.awaiting_delivery_agent_phone)
-async def receive_delivery_agent_phone(message: Message, state: FSMContext):
-    if not _is_admin(message.from_user.id):
+async def receive_delivery_agent_phone(message: Message, state: FSMContext, session: AsyncSession):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         await state.clear()
         return
@@ -1034,8 +1177,8 @@ async def receive_delivery_agent_phone(message: Message, state: FSMContext):
 
 
 @router.message(AdminStates.awaiting_delivery_agent_vehicle)
-async def receive_delivery_agent_vehicle(message: Message, state: FSMContext):
-    if not _is_admin(message.from_user.id):
+async def receive_delivery_agent_vehicle(message: Message, state: FSMContext, session: AsyncSession):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         await state.clear()
         return
@@ -1058,7 +1201,7 @@ async def receive_delivery_agent_vehicle(message: Message, state: FSMContext):
 
 @router.message(AdminStates.awaiting_delivery_agent_telegram_id)
 async def receive_delivery_agent_telegram_id(message: Message, state: FSMContext, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         await state.clear()
         return
@@ -1149,7 +1292,7 @@ async def receive_delivery_agent_telegram_id(message: Message, state: FSMContext
 
 @router.callback_query(F.data == "admin_delivery_tracking")
 async def admin_delivery_tracking(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1164,7 +1307,7 @@ async def admin_delivery_tracking(callback: CallbackQuery, session: AsyncSession
 
 @router.callback_query(F.data == "admin_delivery_assign_picker")
 async def admin_delivery_assign_picker(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1193,7 +1336,7 @@ async def admin_delivery_assign_picker(callback: CallbackQuery, session: AsyncSe
 
 @router.callback_query(F.data.startswith("admin_delivery_assign_"))
 async def admin_delivery_assign_select(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1233,7 +1376,7 @@ async def admin_delivery_assign_select(callback: CallbackQuery, session: AsyncSe
 
 @router.callback_query(F.data.startswith("admin_delivery_set_"))
 async def admin_delivery_set_agent(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1347,7 +1490,7 @@ async def admin_delivery_set_agent(callback: CallbackQuery, session: AsyncSessio
 
 @router.callback_query(F.data.startswith("admin_delete_listing_"))
 async def delete_listing_by_button(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1383,7 +1526,7 @@ async def delete_listing_by_button(callback: CallbackQuery, session: AsyncSessio
 
 @router.callback_query(F.data.startswith("admin_delete_vendor_"))
 async def delete_vendor_by_button(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1419,7 +1562,7 @@ async def delete_vendor_by_button(callback: CallbackQuery, session: AsyncSession
 
 @router.callback_query(F.data.startswith("admin_delete_user_"))
 async def delete_user_by_button(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1469,7 +1612,7 @@ async def delete_user_by_button(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("admin_delete_help_"))
 async def admin_delete_help(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1535,8 +1678,8 @@ async def admin_delete_help(callback: CallbackQuery, session: AsyncSession):
 
 
 @router.callback_query(F.data == "admin_privileges_help")
-async def admin_privileges_help(callback: CallbackQuery, state: FSMContext):
-    if not _is_admin(callback.from_user.id):
+async def admin_privileges_help(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1557,7 +1700,7 @@ async def admin_privileges_help(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.awaiting_privilege_seller_id)
 async def receive_privilege_seller_id(message: Message, state: FSMContext, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         await state.clear()
         return
@@ -1580,8 +1723,8 @@ async def receive_privilege_seller_id(message: Message, state: FSMContext, sessi
     F.data.startswith("admin_priv_featured_"),
     StateFilter(AdminStates.awaiting_privilege_featured),
 )
-async def receive_privilege_featured(callback: CallbackQuery, state: FSMContext):
-    if not _is_admin(callback.from_user.id):
+async def receive_privilege_featured(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         await state.clear()
         return
@@ -1599,7 +1742,7 @@ async def receive_privilege_featured(callback: CallbackQuery, state: FSMContext)
 
 @router.message(AdminStates.awaiting_privilege_priority)
 async def receive_privilege_priority(message: Message, state: FSMContext, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         await state.clear()
         return
@@ -1640,8 +1783,8 @@ async def receive_privilege_priority(message: Message, state: FSMContext, sessio
 
 
 @router.callback_query(F.data == "admin_broadcast_help")
-async def admin_broadcast_help(callback: CallbackQuery, state: FSMContext):
-    if not _is_admin(callback.from_user.id):
+async def admin_broadcast_help(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1659,8 +1802,8 @@ async def admin_broadcast_help(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("admin_broadcast_audience_"))
-async def choose_broadcast_audience(callback: CallbackQuery, state: FSMContext):
-    if not _is_admin(callback.from_user.id):
+async def choose_broadcast_audience(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
 
@@ -1679,7 +1822,7 @@ async def choose_broadcast_audience(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminStates.awaiting_broadcast_message, F.photo)
 async def send_photo_broadcast_from_state(message: Message, state: FSMContext, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         await state.clear()
         return
@@ -1715,7 +1858,7 @@ async def send_photo_broadcast_from_state(message: Message, state: FSMContext, s
 
 @router.message(AdminStates.awaiting_broadcast_message)
 async def send_broadcast_from_state(message: Message, state: FSMContext, session: AsyncSession):
-    if not _is_admin(message.from_user.id):
+    if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")
         await state.clear()
         return
@@ -1744,7 +1887,7 @@ async def send_broadcast_from_state(message: Message, state: FSMContext, session
 
 @router.callback_query(F.data == "admin_pending_refresh")
 async def refresh_pending(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1759,7 +1902,7 @@ async def refresh_pending(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("admin_approve_"))
 async def approve_seller(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
@@ -1797,7 +1940,7 @@ async def approve_seller(callback: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.startswith("admin_reject_"))
 async def reject_seller(callback: CallbackQuery, session: AsyncSession):
-    if not _is_admin(callback.from_user.id):
+    if not await _is_admin(callback.from_user.id, session):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)

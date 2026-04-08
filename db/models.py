@@ -68,6 +68,11 @@ class DeliveryStatus(str, PyEnum):
     DELIVERED = "DELIVERED"
 
 
+class AdminRole(str, PyEnum):
+    SUPER_ADMIN = "SUPER_ADMIN"
+    OPS_ADMIN = "OPS_ADMIN"
+
+
 class DeliveryEventType(str, PyEnum):
     """Delivery timeline event enum."""
     ASSIGNED = "ASSIGNED"
@@ -121,6 +126,23 @@ class User(Base):
 
     def __repr__(self) -> str:
         return f"<User {self.telegram_id} - {self.first_name}>"
+
+
+class AdminUser(Base):
+    """Admin users allowed to access bot admin tools."""
+
+    __tablename__ = "admin_users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    role: Mapped[AdminRole] = mapped_column(Enum(AdminRole), nullable=False, default=AdminRole.OPS_ADMIN)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_admin_users_role", "role"),
+    )
 
 
 class SellerProfile(Base):
