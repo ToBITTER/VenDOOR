@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -23,6 +24,9 @@ class DeliveryAgentStates(StatesGroup):
     awaiting_arrival_confirmation = State()
     awaiting_pickup_photo = State()
     awaiting_delivery_location = State()
+    awaiting_profile_name = State()
+    awaiting_profile_phone = State()
+    awaiting_profile_vehicle = State()
 
 
 def _parse_callback_id(callback_data: str | None, prefix: str) -> int | None:
@@ -83,6 +87,272 @@ async def get_delivery_with_orders(delivery_id: int, session: AsyncSession) -> D
         .where(Delivery.id == delivery_id)
     )
     return result.unique().scalars().first()
+
+
+async def _ensure_delivery_order_link(session: AsyncSession, delivery: Delivery) -> None:
+    if delivery.delivery_orders:
+        return
+    if not delivery.order_id:
+        return
+    existing = await session.execute(
+        select(DeliveryOrder).where(
+            DeliveryOrder.delivery_id == delivery.id,
+            DeliveryOrder.order_id == delivery.order_id,
+        )
+    )
+    if existing.scalars().first():
+        return
+    session.add(DeliveryOrder(delivery_id=delivery.id, order_id=delivery.order_id, sequence=1))
+    await session.flush()
+
+
+def _delivery_hub_keyboard(is_agent: bool, delivery_id: int | None = None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if is_agent:
+        rows.append([InlineKeyboardButton(text="Refresh Jobs", callback_data="delivery_hub")])
+        if delivery_id is not None:
+            rows.append([InlineKeyboardButton(text="Open Latest Job", callback_data=f"delivery_open_{delivery_id}")])
+    else:
+        rows.append([InlineKeyboardButton(text="Become Delivery Agent", callback_data="delivery_agent_signup")])
+    rows.append([InlineKeyboardButton(text="Back", callback_data="back_to_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "delivery_hub")
+async def delivery_hub(callback: CallbackQuery, session: AsyncSession):
+    if callback.from_user is None:
+        await safe_answer_callback(callback, "Unable to identify your account", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    agent = await get_agent_by_telegram_id(callback.from_user.id, session)
+    if not agent:
+        await _safe_edit_or_reply(
+            callback,
+            "<b>Delivery Hub</b>\n\nYou are not yet a delivery agent.\nTap below to create your rider profile.",
+            parse_mode="HTML",
+            reply_markup=_delivery_hub_keyboard(is_agent=False),
+        )
+        return
+
+    if not agent.is_active:
+        await _safe_edit_or_reply(
+            callback,
+            "<b>Delivery Hub</b>\n\nYour rider profile is pending activation by admin.",
+            parse_mode="HTML",
+            reply_markup=_delivery_hub_keyboard(is_agent=True),
+        )
+        return
+
+    result = await session.execute(
+        select(Delivery)
+        .options(joinedload(Delivery.order).joinedload(Order.listing))
+        .where(Delivery.agent_id == agent.id)
+        .where(
+            Delivery.status.in_(
+                [
+                    DeliveryStatus.ASSIGNED,
+                    DeliveryStatus.PICKED_UP,
+                    DeliveryStatus.IN_TRANSIT,
+                ]
+            )
+        )
+        .order_by(Delivery.updated_at.desc())
+        .limit(10)
+    )
+    jobs = result.unique().scalars().all()
+
+    if not jobs:
+        await _safe_edit_or_reply(
+            callback,
+            (
+                "<b>Delivery Hub</b>\n\n"
+                "No active jobs right now.\n"
+                "As soon as admin assigns one, it appears here automatically."
+            ),
+            parse_mode="HTML",
+            reply_markup=_delivery_hub_keyboard(is_agent=True),
+        )
+        return
+
+    lines = ["<b>Delivery Hub</b>\n", "Your active jobs:\n"]
+    keyboard_rows: list[list[InlineKeyboardButton]] = []
+    for job in jobs:
+        title = job.order.listing.title if job.order and job.order.listing else "Order"
+        lines.append(f"- Delivery #{job.id} | {job.status.value} | {title}")
+        keyboard_rows.append(
+            [InlineKeyboardButton(text=f"Open Delivery #{job.id}", callback_data=f"delivery_open_{job.id}")]
+        )
+    keyboard_rows.append([InlineKeyboardButton(text="Refresh Jobs", callback_data="delivery_hub")])
+    keyboard_rows.append([InlineKeyboardButton(text="Back", callback_data="back_to_menu")])
+
+    await _safe_edit_or_reply(
+        callback,
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+    )
+
+
+@router.callback_query(F.data == "delivery_agent_signup")
+async def delivery_agent_signup_start(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    if callback.from_user is None:
+        await safe_answer_callback(callback, "Unable to identify your account", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    existing = await get_agent_by_telegram_id(callback.from_user.id, session)
+    if existing:
+        if existing.is_active:
+            await _safe_edit_or_reply(
+                callback,
+                "You already have an active rider profile. Open Delivery Hub to see jobs.",
+                reply_markup=_delivery_hub_keyboard(is_agent=True),
+            )
+        else:
+            await _safe_edit_or_reply(
+                callback,
+                "You already signed up. Waiting for admin activation.",
+                reply_markup=_delivery_hub_keyboard(is_agent=True),
+            )
+        return
+
+    await state.set_state(DeliveryAgentStates.awaiting_profile_name)
+    await _safe_edit_or_reply(
+        callback,
+        "Great, let's set up your rider profile.\n\nSend your full name:",
+        reply_markup=_cancel_keyboard(),
+    )
+
+
+@router.message(DeliveryAgentStates.awaiting_profile_name)
+async def delivery_agent_signup_name(message: Message, state: FSMContext):
+    name = (message.text or "").strip()
+    if len(name) < 2:
+        await message.answer("Please send a valid full name (at least 2 characters).")
+        return
+    await state.update_data(name=name)
+    await state.set_state(DeliveryAgentStates.awaiting_profile_phone)
+    await message.answer("Send your phone number (or type `skip`).", parse_mode="Markdown")
+
+
+@router.message(DeliveryAgentStates.awaiting_profile_phone)
+async def delivery_agent_signup_phone(message: Message, state: FSMContext):
+    phone = (message.text or "").strip()
+    if phone.lower() == "skip":
+        phone = ""
+    await state.update_data(phone=phone)
+    await state.set_state(DeliveryAgentStates.awaiting_profile_vehicle)
+    await message.answer("What vehicle do you use? (bike / bicycle / car, or type `skip`)", parse_mode="Markdown")
+
+
+@router.message(DeliveryAgentStates.awaiting_profile_vehicle)
+async def delivery_agent_signup_vehicle(message: Message, state: FSMContext, session: AsyncSession):
+    if message.from_user is None:
+        await state.clear()
+        await message.answer("Unable to identify your account. Please restart with /start.")
+        return
+
+    vehicle = (message.text or "").strip()
+    if vehicle.lower() == "skip":
+        vehicle = ""
+    data = await state.get_data()
+    name = (data.get("name") or message.from_user.full_name or "Delivery Agent").strip()
+    phone = (data.get("phone") or "").strip() or None
+    vehicle_type = vehicle or None
+    telegram_id = str(message.from_user.id)
+
+    agent = DeliveryAgent(
+        name=name,
+        telegram_id=telegram_id,
+        phone=phone,
+        vehicle_type=vehicle_type,
+        is_active=True,
+    )
+    session.add(agent)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        await state.clear()
+        await message.answer("This Telegram account is already linked to a rider profile.")
+        return
+
+    await state.clear()
+    await message.answer(
+        (
+            "<b>Rider Profile Created</b>\n\n"
+            "You're now set as a delivery agent.\n"
+            "Use Delivery Hub from the main menu to view jobs and action buttons."
+        ),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("delivery_open_"))
+async def delivery_open_job(callback: CallbackQuery, session: AsyncSession):
+    delivery_id = _parse_callback_id(callback.data, "delivery_open_")
+    if delivery_id is None:
+        await safe_answer_callback(callback, "Invalid delivery ID", show_alert=True)
+        return
+    if callback.from_user is None:
+        await safe_answer_callback(callback, "Unable to identify delivery agent", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    delivery = await get_delivery_with_orders(delivery_id, session)
+    if not delivery:
+        await _safe_edit_or_reply(callback, "Delivery not found.")
+        return
+    agent = await get_agent_by_telegram_id(callback.from_user.id, session)
+    if not agent or delivery.agent_id != agent.id:
+        await _safe_edit_or_reply(callback, "This delivery is not assigned to you.")
+        return
+
+    await _ensure_delivery_order_link(session, delivery)
+    await session.commit()
+    delivery = await get_delivery_with_orders(delivery_id, session)
+    if not delivery:
+        await _safe_edit_or_reply(callback, "Delivery not found.")
+        return
+
+    if delivery.status in (DeliveryStatus.ASSIGNED, DeliveryStatus.PENDING_ASSIGNMENT):
+        delivery_orders = sorted(delivery.delivery_orders or [], key=lambda item: (item.sequence, item.id))
+        if not delivery_orders:
+            await _safe_edit_or_reply(callback, "No orders attached to this delivery yet.")
+            return
+        await _safe_edit_or_reply(
+            callback,
+            "<b>Ready for Pickup</b>\n\nTap START PICKUP to begin.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="START PICKUP", callback_data=f"delivery_start_pickup_{delivery.id}")],
+                    [InlineKeyboardButton(text="Back to Hub", callback_data="delivery_hub")],
+                ]
+            ),
+        )
+        return
+
+    if delivery.status == DeliveryStatus.PICKED_UP:
+        await _safe_edit_or_reply(
+            callback,
+            "<b>Items Picked Up</b>\n\nTap below to mark this delivery in transit.",
+            parse_mode="HTML",
+            reply_markup=_delivery_progress_keyboard(delivery.id, stage="ready_in_transit"),
+        )
+        return
+
+    if delivery.status == DeliveryStatus.IN_TRANSIT:
+        await _safe_edit_or_reply(
+            callback,
+            "<b>Delivery In Transit</b>\n\nUse the buttons below for live updates.",
+            parse_mode="HTML",
+            reply_markup=_delivery_progress_keyboard(delivery.id, stage="in_transit"),
+        )
+        return
+
+    await _safe_edit_or_reply(callback, f"Delivery is currently {delivery.status.value}.")
 
 
 def _arrival_keyboard(delivery_id: int, delivery_order_id: int) -> InlineKeyboardMarkup:

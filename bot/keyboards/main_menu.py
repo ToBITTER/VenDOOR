@@ -16,6 +16,7 @@ def get_main_menu_inline() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="My Orders", callback_data="my_orders"),
                 InlineKeyboardButton(text="Become Seller", callback_data="seller_register"),
             ],
+            [InlineKeyboardButton(text="Delivery Hub", callback_data="delivery_hub")],
             [
                 InlineKeyboardButton(text="My Listings", callback_data="seller_listings"),
                 InlineKeyboardButton(text="Complaints", callback_data="complaints"),
