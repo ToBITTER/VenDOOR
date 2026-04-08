@@ -15,7 +15,18 @@ from bot.helpers.telegram import (
     safe_edit_text,
     safe_replace_with_screen,
 )
-from bot.keyboards.main_menu import get_main_menu_inline
+from bot.keyboards.main_menu import (
+    MENU_BROWSE,
+    MENU_CART,
+    MENU_COMPLAINTS,
+    MENU_DELIVERY,
+    MENU_HELP,
+    MENU_LISTINGS,
+    MENU_ORDERS,
+    MENU_SELLER,
+    get_main_menu_inline,
+    get_main_menu_reply,
+)
 from db.models import User
 
 router = Router()
@@ -52,14 +63,19 @@ async def start_handler(message: Message, session: AsyncSession):
             photo=welcome_banner,
             caption=WELCOME_TEXT,
             parse_mode="HTML",
-            reply_markup=get_main_menu_inline(),
+            reply_markup=get_main_menu_reply(),
         )
     else:
         await message.answer(
             WELCOME_TEXT,
             parse_mode="HTML",
-            reply_markup=get_main_menu_inline(),
+            reply_markup=get_main_menu_reply(),
         )
+
+    await message.answer(
+        "Quick access menu is active below. You can also tap inline buttons on screens.",
+        reply_markup=get_main_menu_reply(),
+    )
 
 
 @router.callback_query(F.data == "back_to_menu")
@@ -78,6 +94,8 @@ async def back_to_menu_handler(callback: CallbackQuery):
         parse_mode="HTML",
         reply_markup=get_main_menu_inline(),
     )
+    if callback.message:
+        await callback.message.answer("Main menu ready.", reply_markup=get_main_menu_reply())
 
 
 @router.callback_query(F.data == "help")
@@ -111,3 +129,45 @@ async def help_handler(callback: CallbackQuery):
         parse_mode="HTML",
         reply_markup=get_main_menu_inline(),
     )
+    if callback.message:
+        await callback.message.answer("You can always use the quick menu below.", reply_markup=get_main_menu_reply())
+
+
+@router.message(F.text.in_([MENU_BROWSE, MENU_CART, MENU_ORDERS, MENU_SELLER, MENU_LISTINGS, MENU_COMPLAINTS, MENU_HELP, MENU_DELIVERY]))
+async def quick_menu_router(message: Message):
+    text = (message.text or "").strip()
+    callback_map = {
+        MENU_BROWSE: "browse_catalog",
+        MENU_CART: "my_cart",
+        MENU_ORDERS: "my_orders",
+        MENU_SELLER: "seller_register",
+        MENU_LISTINGS: "seller_listings",
+        MENU_COMPLAINTS: "complaints",
+        MENU_HELP: "help",
+        MENU_DELIVERY: "delivery_hub",
+    }
+    callback_data = callback_map.get(text)
+    if not callback_data:
+        return
+
+    await message.answer(
+        f"Opening {text}...",
+        reply_markup=get_main_menu_reply(),
+    )
+    if callback_data == "browse_catalog":
+        from bot.keyboards.main_menu import get_catalog_categories
+
+        await message.answer(
+            "<b>Browse Categories</b>\nChoose where you want to shop:",
+            parse_mode="HTML",
+            reply_markup=get_catalog_categories(),
+        )
+    else:
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        await message.answer(
+            "Tap below to continue:",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=text, callback_data=callback_data)]]
+            ),
+        )

@@ -2,29 +2,57 @@
 Main menu keyboards for VenDOOR Bot.
 """
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
+
+MENU_BROWSE = "Browse Catalog"
+MENU_CART = "My Cart"
+MENU_ORDERS = "My Orders"
+MENU_SELLER = "Become Seller"
+MENU_DELIVERY = "Delivery Hub"
+MENU_LISTINGS = "My Listings"
+MENU_COMPLAINTS = "Complaints"
+MENU_HELP = "Help"
 
 
 def get_main_menu_inline() -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Browse Catalog", callback_data="browse_catalog"),
-                InlineKeyboardButton(text="My Cart", callback_data="my_cart"),
+                InlineKeyboardButton(text=MENU_BROWSE, callback_data="browse_catalog"),
+                InlineKeyboardButton(text=MENU_CART, callback_data="my_cart"),
             ],
             [
-                InlineKeyboardButton(text="My Orders", callback_data="my_orders"),
-                InlineKeyboardButton(text="Become Seller", callback_data="seller_register"),
+                InlineKeyboardButton(text=MENU_ORDERS, callback_data="my_orders"),
+                InlineKeyboardButton(text=MENU_SELLER, callback_data="seller_register"),
             ],
-            [InlineKeyboardButton(text="Delivery Hub", callback_data="delivery_hub")],
+            [InlineKeyboardButton(text=MENU_DELIVERY, callback_data="delivery_hub")],
             [
-                InlineKeyboardButton(text="My Listings", callback_data="seller_listings"),
-                InlineKeyboardButton(text="Complaints", callback_data="complaints"),
-                InlineKeyboardButton(text="Help", callback_data="help"),
+                InlineKeyboardButton(text=MENU_LISTINGS, callback_data="seller_listings"),
+                InlineKeyboardButton(text=MENU_COMPLAINTS, callback_data="complaints"),
+                InlineKeyboardButton(text=MENU_HELP, callback_data="help"),
             ],
         ]
     )
     return keyboard
+
+
+def get_main_menu_reply() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=MENU_BROWSE), KeyboardButton(text=MENU_CART)],
+            [KeyboardButton(text=MENU_ORDERS), KeyboardButton(text=MENU_SELLER)],
+            [KeyboardButton(text=MENU_DELIVERY), KeyboardButton(text=MENU_LISTINGS)],
+            [KeyboardButton(text=MENU_COMPLAINTS), KeyboardButton(text=MENU_HELP)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Please select an action",
+    )
 
 
 def get_catalog_categories() -> InlineKeyboardMarkup:
