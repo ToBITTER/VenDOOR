@@ -16,7 +16,7 @@ from db.models import AdminUser, Delivery, DeliveryAgent, DeliveryOrder, Deliver
 from core.config import get_settings
 from services.delivery_notifications import (
     notify_buyer_all_pickups_completed,
-    notify_buyer_delivery_status_update,
+    notify_buyer_group_delivery_status_update,
 )
 from services.delivery_status import update_delivery_order_status, update_delivery_status
 
@@ -844,10 +844,7 @@ async def delivery_in_transit(callback: CallbackQuery, session: AsyncSession):
     await update_delivery_status(delivery_id, DeliveryStatus.IN_TRANSIT, "AGENT", None, session)
     await session.commit()
 
-    for delivery_order in delivery.delivery_orders or []:
-        await notify_buyer_delivery_status_update(
-            int(delivery_order.order_id), DeliveryStatus.IN_TRANSIT.value, agent, session
-        )
+    await notify_buyer_group_delivery_status_update(delivery_id, DeliveryStatus.IN_TRANSIT.value, agent, session)
 
     await _safe_edit_or_reply(
         callback,
@@ -948,10 +945,7 @@ async def delivery_mark_delivered(callback: CallbackQuery, state: FSMContext, se
     await update_delivery_status(delivery_id, DeliveryStatus.DELIVERED, "AGENT", None, session)
     await session.commit()
 
-    for delivery_order in delivery.delivery_orders or []:
-        await notify_buyer_delivery_status_update(
-            int(delivery_order.order_id), DeliveryStatus.DELIVERED.value, agent, session
-        )
+    await notify_buyer_group_delivery_status_update(delivery_id, DeliveryStatus.DELIVERED.value, agent, session)
 
     await state.clear()
     await _safe_edit_or_reply(

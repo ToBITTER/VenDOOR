@@ -81,6 +81,58 @@ async def _notify_admins_new_paid_order(
             logger.exception("Failed admin new-order alert order_id=%s chat_id=%s", order.id, chat_id)
 
 
+async def _notify_admins_new_paid_delivery(
+    session: AsyncSession,
+    bot: Bot | None,
+    delivery_id: int,
+    orders: list[Order],
+) -> None:
+    if not bot or not orders:
+        return
+
+    recipients: set[int] = set()
+    if settings.admin_telegram_id and str(settings.admin_telegram_id).isdigit():
+        recipients.add(int(settings.admin_telegram_id))
+
+    admins_result = await session.execute(select(AdminUser.telegram_id))
+    for telegram_id in admins_result.scalars().all():
+        if telegram_id and str(telegram_id).isdigit():
+            recipients.add(int(telegram_id))
+
+    if not recipients:
+        return
+
+    total_amount = sum(order.amount for order in orders)
+    total_items = sum(order.quantity for order in orders)
+    order_ids_text = ", ".join(f"#{order.id}" for order in orders)
+    lines = [
+        "<b>New Combined Paid Order</b>",
+        "",
+        f"<b>Delivery ID:</b> #{delivery_id}",
+        f"<b>Order IDs:</b> {order_ids_text}",
+        f"<b>Total Items:</b> {total_items}",
+        f"<b>Total Amount:</b> NGN {total_amount:,.2f}",
+        "",
+        "<b>Items:</b>",
+    ]
+    for order in orders:
+        item_title = order.listing.title if order.listing else "Unknown item"
+        lines.append(f"#{order.id} • {order.quantity} x {item_title}")
+
+    text = "\n".join(lines)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"Assign Order #{orders[0].id}", callback_data=f"admin_delivery_assign_{delivery_id}")]
+        ]
+    )
+
+    for chat_id in recipients:
+        try:
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            logger.exception("Failed admin combined-order alert delivery_id=%s chat_id=%s", delivery_id, chat_id)
+
+
 async def _create_webhook_receipt(
     session: AsyncSession,
     provider: str,
@@ -555,7 +607,9 @@ async def _handle_cart_payment_success(
                 )
             except Exception:
                 logger.exception("Failed to notify seller for cart-paid order %s", order.id)
-        await _notify_admins_new_paid_order(session, bot, order, shared_delivery_id)
+
+    if shared_delivery_id is not None:
+        await _notify_admins_new_paid_delivery(session, bot, shared_delivery_id, pending_orders)
 
     return {
         "status": "success",

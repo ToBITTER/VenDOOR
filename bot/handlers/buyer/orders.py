@@ -54,6 +54,31 @@ async def _effective_delivery(order: Order, session: AsyncSession) -> Delivery |
     return result.scalars().first()
 
 
+async def _group_orders_by_delivery(orders: list[Order], session: AsyncSession) -> list[dict]:
+    groups: dict[str, dict] = {}
+    for order in orders:
+        delivery = await _effective_delivery(order, session)
+        if delivery:
+            key = f"delivery:{delivery.id}"
+            group = groups.setdefault(
+                key,
+                {"kind": "delivery", "delivery": delivery, "orders": [], "latest": order.created_at},
+            )
+        else:
+            key = f"single:{order.id}"
+            group = groups.setdefault(
+                key,
+                {"kind": "single", "delivery": None, "orders": [], "latest": order.created_at},
+            )
+        group["orders"].append(order)
+        if order.created_at > group["latest"]:
+            group["latest"] = order.created_at
+
+    grouped = list(groups.values())
+    grouped.sort(key=lambda item: item["latest"], reverse=True)
+    return grouped
+
+
 async def _group_confirmable_orders(order: Order, buyer_id: int, session: AsyncSession) -> list[Order]:
     delivery = await _effective_delivery(order, session)
     if not delivery:
@@ -85,6 +110,15 @@ def _group_confirm_keyboard(orders: list[Order]) -> InlineKeyboardMarkup:
                 )
             ]
         )
+    rows.append([InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _delivery_group_actions_keyboard(delivery_id: int, fallback_order_id: int, can_confirm: bool) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="Track Delivery", callback_data=f"order_track_{fallback_order_id}")]]
+    if can_confirm:
+        rows.append([InlineKeyboardButton(text="Confirm Receipt", callback_data=f"order_confirm_group_{delivery_id}")])
+    rows.append([InlineKeyboardButton(text="Raise Dispute", callback_data=f"order_dispute_{fallback_order_id}")])
     rows.append([InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -149,7 +183,11 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
 
     result = await session.execute(
         select(Order)
-        .options(selectinload(Order.listing), selectinload(Order.delivery))
+        .options(
+            selectinload(Order.listing),
+            selectinload(Order.delivery),
+            selectinload(Order.seller).selectinload(SellerProfile.user),
+        )
         .where(Order.buyer_id == user.id)
         .order_by(Order.created_at.desc())
     )
@@ -166,38 +204,125 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
         )
         return
 
+    grouped_orders = await _group_orders_by_delivery(orders, session)
+
     text = "<b>Your Orders</b>\n\n"
-    for order in orders[:5]:
-        effective_delivery = await _effective_delivery(order, session)
+    for group in grouped_orders[:5]:
+        group_orders: list[Order] = group["orders"]
+        total_amount = sum(order.amount for order in group_orders)
+        total_items = sum(order.quantity for order in group_orders)
+        first_order = group_orders[0]
+        effective_delivery = group["delivery"]
+        group_status = "PAID"
+        if any(order.status == OrderStatus.DISPUTED for order in group_orders):
+            group_status = "DISPUTED"
+        elif all(order.status == OrderStatus.COMPLETED for order in group_orders):
+            group_status = "COMPLETED"
+        elif any(order.status == OrderStatus.CANCELLED for order in group_orders):
+            group_status = "CANCELLED"
+        elif any(order.status == OrderStatus.REFUNDED for order in group_orders):
+            group_status = "REFUNDED"
         status_emoji = {
-            OrderStatus.PENDING: "PENDING",
-            OrderStatus.PAID: "PAID",
-            OrderStatus.COMPLETED: "COMPLETED",
-            OrderStatus.DISPUTED: "DISPUTED",
-            OrderStatus.CANCELLED: "CANCELLED",
-            OrderStatus.REFUNDED: "REFUNDED",
-        }.get(order.status, "UNKNOWN")
+            "PENDING": "PENDING",
+            "PAID": "PAID",
+            "COMPLETED": "COMPLETED",
+            "DISPUTED": "DISPUTED",
+            "CANCELLED": "CANCELLED",
+            "REFUNDED": "REFUNDED",
+        }.get(group_status, "UNKNOWN")
+
+        title = (
+            first_order.listing.title if len(group_orders) == 1 and first_order.listing else f"{len(group_orders)} items"
+        )
+        group_label = f"Delivery #{effective_delivery.id}" if effective_delivery else f"Order #{first_order.id}"
 
         text += (
-            f"<b>Order #{order.id}</b>\n"
-            f"Product: {order.listing.title if order.listing else 'Unknown listing'}\n"
-            f"Qty: {order.quantity}\n"
-            f"Amount: NGN {order.amount:,.2f}\n"
+            f"<b>{group_label}</b>\n"
+            f"Product(s): {title}\n"
+            f"Qty: {total_items}\n"
+            f"Amount: NGN {total_amount:,.2f}\n"
             f"Status: {status_emoji}\n"
             f"Delivery: {effective_delivery.status.value if effective_delivery else 'PENDING_ASSIGNMENT'}\n"
-            f"Date: {order.created_at.strftime('%d/%m/%Y')}\n\n"
+            f"Date: {group['latest'].strftime('%d/%m/%Y')}\n\n"
         )
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
     keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=f"Order #{orders[0].id}", callback_data=f"view_order_{orders[0].id}")],
-            [InlineKeyboardButton(text="Back", callback_data="back_to_menu")],
-        ]
+        inline_keyboard=(
+            [
+                [
+                    InlineKeyboardButton(
+                        text=(f"Delivery #{group['delivery'].id}" if group["delivery"] else f"Order #{group['orders'][0].id}"),
+                        callback_data=(
+                            f"view_delivery_group_{group['delivery'].id}"
+                            if group["delivery"]
+                            else f"view_order_{group['orders'][0].id}"
+                        ),
+                    )
+                ]
+                for group in grouped_orders[:5]
+            ]
+            + [[InlineKeyboardButton(text="Back", callback_data="back_to_menu")]]
+        )
     )
 
     await safe_replace_with_screen(callback, text, parse_mode="HTML", reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("view_delivery_group_"))
+async def view_delivery_group(callback: CallbackQuery, session: AsyncSession):
+    delivery_id = _callback_int_suffix(callback.data, "view_delivery_group_")
+    if delivery_id is None:
+        await safe_answer_callback(callback, text="Invalid delivery selection", show_alert=True)
+        return
+
+    user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
+    user = user_result.scalars().first()
+    if not user:
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
+        return
+
+    result = await session.execute(
+        select(Order)
+        .options(
+            selectinload(Order.listing),
+            selectinload(Order.seller).selectinload(SellerProfile.user),
+        )
+        .join(DeliveryOrder, DeliveryOrder.order_id == Order.id)
+        .where(DeliveryOrder.delivery_id == delivery_id)
+        .where(Order.buyer_id == user.id)
+        .order_by(DeliveryOrder.sequence.asc(), Order.id.asc())
+    )
+    orders = result.scalars().all()
+    if not orders:
+        await safe_answer_callback(callback, text="Delivery not found", show_alert=True)
+        return
+
+    delivery = await _effective_delivery(orders[0], session)
+    await safe_answer_callback(callback)
+
+    total_items = sum(order.quantity for order in orders)
+    total_amount = sum(order.amount for order in orders)
+    text = [
+        f"<b>Combined Order • Delivery #{delivery_id}</b>",
+        "",
+        f"<b>Total Items:</b> {total_items}",
+        f"<b>Total Amount:</b> NGN {total_amount:,.2f}",
+        f"<b>Delivery Status:</b> {delivery.status.value if delivery else 'PENDING_ASSIGNMENT'}",
+        "",
+        "<b>Items</b>",
+    ]
+    for order in orders:
+        seller_name = order.seller.user.first_name if order.seller and order.seller.user else "Unknown seller"
+        item_title = order.listing.title if order.listing else "Unknown item"
+        text.append(f"#{order.id} • {order.quantity} x {item_title} ({seller_name})")
+
+    can_confirm = any(order.status == OrderStatus.PAID and order.delivered_at for order in orders)
+    await safe_replace_with_screen(
+        callback,
+        "\n".join(text),
+        parse_mode="HTML",
+        reply_markup=_delivery_group_actions_keyboard(delivery_id, orders[0].id, can_confirm),
+    )
 
 
 @router.callback_query(F.data.startswith("view_order_"))
@@ -327,6 +452,49 @@ async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
     except Exception:
         await session.rollback()
         await safe_replace_with_screen(callback, "Could not confirm receipt right now. Please try again.")
+
+
+@router.callback_query(F.data.regexp(r"^order_confirm_group_\d+$"))
+async def confirm_receipt_group(callback: CallbackQuery, session: AsyncSession):
+    delivery_id = _callback_int_suffix((callback.data or "").replace("order_confirm_group_", "view_delivery_group_"), "view_delivery_group_")
+    if delivery_id is None:
+        await safe_answer_callback(callback, text="Invalid order confirmation", show_alert=True)
+        return
+
+    user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
+    user = user_result.scalars().first()
+    if not user:
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
+        return
+
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.listing))
+        .join(DeliveryOrder, DeliveryOrder.order_id == Order.id)
+        .where(DeliveryOrder.delivery_id == delivery_id)
+        .where(Order.buyer_id == user.id)
+        .where(Order.status == OrderStatus.PAID)
+        .where(Order.delivered_at.is_not(None))
+        .order_by(DeliveryOrder.sequence.asc(), Order.id.asc())
+    )
+    grouped_orders = result.scalars().all()
+    if not grouped_orders:
+        await safe_answer_callback(callback, text="No delivered items to confirm yet.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    text = ["<b>Confirm Delivered Items</b>", ""]
+    for grouped_order in grouped_orders:
+        item_title = grouped_order.listing.title if grouped_order.listing else "Item"
+        text.append(f"Order #{grouped_order.id}: {grouped_order.quantity} x {item_title}")
+    text.append("")
+    text.append("Tap each button below to confirm receipt item-by-item.")
+    await safe_replace_with_screen(
+        callback,
+        "\n".join(text),
+        parse_mode="HTML",
+        reply_markup=_group_confirm_keyboard(grouped_orders),
+    )
 
 
 @router.callback_query(F.data.regexp(r"^order_confirm_item_\d+$"))
