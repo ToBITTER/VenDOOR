@@ -28,6 +28,7 @@ from db.models import (
     WebhookReceipt,
 )
 from services.korapay import get_korapay_client
+from services.escrow import get_escrow_service
 from core.config import get_settings
 
 settings = get_settings()
@@ -227,11 +228,16 @@ async def handle_korapay_webhook(
             ",".join(sorted(data.keys())) if isinstance(data, dict) else "N/A",
         )
 
-        # Idempotency guard: ignore duplicate webhook events for same event/reference.
+        receipt_event_type = event
+        if status:
+            # Allow lifecycle progression on same reference (e.g. processing -> success).
+            receipt_event_type = f"{event}|{status}"
+
+        # Idempotency guard: ignore exact duplicate webhook events for same event/status/reference.
         is_new = await _create_webhook_receipt(
             session=session,
             provider="KORAPAY",
-            event_type=event,
+            event_type=receipt_event_type,
             reference=reference,
             payload=webhook_data,
         )
@@ -248,6 +254,17 @@ async def handle_korapay_webhook(
         failed_events = {"charge.failed", "charge.cancelled"}
         success_statuses = {"success", "successful", "paid"}
         failed_statuses = {"failed", "cancelled"}
+        payout_ref_like = bool(reference and str(reference).startswith("VENDOOR_PAYOUT_"))
+        payout_event_like = any(keyword in event_lc for keyword in ("payout", "disbur", "transfer"))
+
+        if payout_ref_like or payout_event_like:
+            return await _handle_payout_webhook_update(
+                reference=reference,
+                event=event_lc,
+                status=status,
+                payload_data=data if isinstance(data, dict) else {},
+                session=session,
+            )
 
         if event_lc in success_events or status in success_statuses:
             # Payment successful - update order to PAID and schedule escrow release
@@ -270,6 +287,62 @@ async def handle_korapay_webhook(
     except Exception:
         logger.exception("Webhook processing error")
         return {"status": "error", "error": "webhook_processing_failed"}
+
+
+def _derive_payout_status(event: str, status: str) -> str:
+    escrow = get_escrow_service()
+    normalized = escrow.normalize_payout_status(status)
+    if normalized != "unknown":
+        return normalized
+
+    if "success" in event or "complete" in event:
+        return "success"
+    if any(token in event for token in ("fail", "cancel", "reverse", "declin", "error")):
+        return "failed"
+    if any(token in event for token in ("process", "pending", "queue", "initi")):
+        return "processing"
+    return "unknown"
+
+
+async def _handle_payout_webhook_update(
+    *,
+    reference: str | None,
+    event: str,
+    status: str,
+    payload_data: dict,
+    session: AsyncSession,
+) -> dict:
+    if not reference:
+        return {"status": "ignored", "reason": "missing_payout_reference"}
+
+    result = await session.execute(
+        select(Order).where(Order.seller_payout_ref == reference).with_for_update()
+    )
+    order = result.scalars().first()
+    if not order:
+        return {"status": "ignored", "reason": "payout_reference_not_found", "reference": reference}
+
+    payout_status = _derive_payout_status(event, status)
+    if payout_status != "unknown":
+        order.seller_payout_status = payout_status
+    else:
+        fallback_status = str(payload_data.get("status") or status or "").strip().lower()
+        order.seller_payout_status = fallback_status or order.seller_payout_status or "unknown"
+
+    if order.seller_payout_status == "success":
+        if order.status == OrderStatus.PAID:
+            order.status = OrderStatus.COMPLETED
+        if not order.escrow_released_at:
+            order.escrow_released_at = datetime.utcnow()
+
+    await session.commit()
+    return {
+        "status": "success",
+        "message": "payout_status_persisted",
+        "order_id": order.id,
+        "payout_reference": reference,
+        "payout_status": order.seller_payout_status,
+    }
 
 
 def _extract_reference(data: dict) -> str | None:

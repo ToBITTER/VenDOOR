@@ -305,6 +305,83 @@ class KorapayClient:
         except Exception:
             logger.exception("Korapay disbursement exception for reference=%s", reference)
             return KorapayPayoutResult(ok=False, reference=reference, status="error", message="exception")
+
+    async def verify_payout(self, reference: str) -> KorapayPayoutResult:
+        """
+        Verify payout/disbursement status by transaction reference.
+        Korapay docs refer to this as payout verification / single transaction status.
+        """
+        reference = str(reference or "").strip()
+        if not reference:
+            return KorapayPayoutResult(ok=False, reference="", status="error", message="missing_reference")
+
+        candidate_paths = [
+            f"{self.base_url}/transactions/{reference}",
+            f"{self.base_url}/payouts/{reference}",
+        ]
+        last_payload: dict | None = None
+        last_status_code: int | None = None
+        last_message: str | None = None
+
+        try:
+            async with httpx.AsyncClient() as client:
+                for url in candidate_paths:
+                    response = await client.get(url, headers=self.headers, timeout=15.0)
+                    last_status_code = response.status_code
+                    if not response.is_success:
+                        logger.warning(
+                            "Korapay payout verify probe failed status_code=%s url=%s reference=%s",
+                            response.status_code,
+                            url,
+                            reference,
+                        )
+                        continue
+
+                    payload = response.json()
+                    last_payload = payload if isinstance(payload, dict) else None
+                    ok = self._is_success_status((payload or {}).get("status")) if isinstance(payload, dict) else False
+                    message = (payload or {}).get("message") if isinstance(payload, dict) else None
+                    tx_data = (payload or {}).get("data") if isinstance(payload, dict) else None
+                    if not ok and not tx_data:
+                        continue
+                    tx_status = None
+                    if isinstance(tx_data, dict):
+                        tx_status = str(tx_data.get("status") or "").strip().lower() or None
+                    return KorapayPayoutResult(
+                        ok=ok,
+                        reference=str((tx_data or {}).get("reference") or reference),
+                        status=tx_status,
+                        message=message,
+                        raw=last_payload,
+                    )
+        except Exception:
+            logger.exception("Korapay payout verification exception for reference=%s", reference)
+            return KorapayPayoutResult(
+                ok=False,
+                reference=reference,
+                status="error",
+                message="exception",
+                raw=last_payload,
+            )
+
+        if isinstance(last_payload, dict):
+            last_message = str(last_payload.get("message") or "").strip() or None
+        if not last_message:
+            last_message = "verify_payout_failed"
+
+        status = "error"
+        if last_status_code == 404:
+            status = "not_found"
+        elif last_status_code in {401, 403}:
+            status = "not_authorized"
+
+        return KorapayPayoutResult(
+            ok=False,
+            reference=reference,
+            status=status,
+            message=last_message,
+            raw=last_payload,
+        )
     
     def verify_webhook_signature(self, payload: dict | str | bytes, signature: str) -> bool:
         """

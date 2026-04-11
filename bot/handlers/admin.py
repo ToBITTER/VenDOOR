@@ -22,6 +22,7 @@ from sqlalchemy.orm import joinedload
 
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text, safe_replace_with_screen
 from core.config import get_settings
+from services.escrow import get_escrow_service
 from db.models import (
     AdminRole,
     AdminUser,
@@ -458,6 +459,34 @@ async def _render_payouts_text(session: AsyncSession, limit: int = 15) -> str:
     if text.strip() == "<b>Payout Monitor (latest 15)</b>":
         return "<b>Payout Monitor</b>\n\nNo payout records yet."
     return text
+
+
+async def _payouts_keyboard(session: AsyncSession) -> InlineKeyboardMarkup:
+    failed_statuses = {"failed", "error", "cancelled", "reversed", "declined", "not_authorized"}
+    result = await session.execute(
+        select(Order)
+        .where(Order.seller_payout_ref.is_not(None))
+        .where(Order.seller_payout_status.in_(tuple(failed_statuses)))
+        .order_by(Order.updated_at.desc())
+        .limit(6)
+    )
+    failed_orders = result.scalars().all()
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for order in failed_orders:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"Retry payout #{order.id}",
+                    callback_data=f"admin_retry_payout_{order.id}",
+                )
+            ]
+        )
+
+    rows.append([InlineKeyboardButton(text="Refresh", callback_data="admin_payouts")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    rows.append([InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _render_listings_text(session: AsyncSession, limit: int = 10) -> str:
@@ -1057,7 +1086,43 @@ async def admin_payouts(callback: CallbackQuery, session: AsyncSession):
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=_admin_tools_keyboard(),
+        reply_markup=await _payouts_keyboard(session),
+    )
+
+
+@router.callback_query(F.data.startswith("admin_retry_payout_"))
+async def admin_retry_failed_payout(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    order_id = _callback_int_suffix(callback.data, "admin_retry_payout_")
+    if order_id is None:
+        await safe_edit_text(callback, "Invalid payout payload.", reply_markup=await _payouts_keyboard(session))
+        return
+
+    escrow = get_escrow_service()
+    ok, status = await escrow.retry_failed_payout(order_id, session)
+    if not ok:
+        await safe_edit_text(
+            callback,
+            (
+                "<b>Payout Retry</b>\n\n"
+                f"Order #{order_id}\n"
+                f"Result: {status}"
+            ),
+            parse_mode="HTML",
+            reply_markup=await _payouts_keyboard(session),
+        )
+        return
+
+    text = await _render_payouts_text(session)
+    await safe_edit_text(
+        callback,
+        f"{text}\n\n<b>Retry queued</b> for order #{order_id} (status: {status}).",
+        parse_mode="HTML",
+        reply_markup=await _payouts_keyboard(session),
     )
 
 

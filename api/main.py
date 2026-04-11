@@ -824,6 +824,38 @@ async def list_all_transactions(
     }
 
 
+@app.post("/admin/payouts/{reference}/verify")
+async def verify_payout_reference(
+    reference: str,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Verify a payout by reference and persist latest status on related order.
+    """
+    from services.escrow import get_escrow_service
+
+    escrow = get_escrow_service()
+    result = await escrow.verify_payout_by_reference(reference, session)
+    if not result.get("ok") and result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@app.post("/admin/payouts/{reference}/verify-async")
+async def verify_payout_reference_async(
+    reference: str,
+    _: None = Depends(require_admin),
+):
+    """
+    Queue payout verification task by reference.
+    """
+    from tasks.payouts import verify_payout_by_reference as verify_task
+
+    task = verify_task.delay(reference)
+    return {"queued": True, "task_id": task.id, "reference": reference}
+
+
 @app.get("/admin/listings")
 async def list_all_listings(
     _: None = Depends(require_admin),

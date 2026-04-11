@@ -43,6 +43,6 @@ app.conf.beat_schedule = {
 }
 
 # Import tasks to register them
-from tasks import escrow_release, notifications
+from tasks import escrow_release, notifications, payouts
 
 __all__ = ["app"]
