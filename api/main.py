@@ -11,6 +11,7 @@ import time
 import uuid
 import hmac
 import json
+import httpx
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 UPDATE_SEMAPHORE = asyncio.Semaphore(20)
 BROADCAST_SEMAPHORE = asyncio.Semaphore(20)
 TELEGRAM_SECRET_HEADER = "x-telegram-bot-api-secret-token"
+_PUBLIC_IP_CACHE: dict[str, float | str] = {"value": "", "expires_at": 0.0}
 
 
 def _log_production_gaps() -> None:
@@ -157,6 +159,40 @@ async def _run_update(dispatcher: Dispatcher, bot: Bot, update: Update) -> None:
             await dispatcher.feed_update(bot, update)
         except Exception:
             logger.exception("Unhandled exception while processing Telegram update")
+
+
+async def _resolve_public_egress_ip() -> str | None:
+    """
+    Resolve server outbound/public IP for payment-provider whitelist diagnostics.
+    Cached briefly to reduce external calls on repeated admin checks.
+    """
+    now = time.time()
+    cached_value = str(_PUBLIC_IP_CACHE.get("value") or "").strip()
+    cached_expires = float(_PUBLIC_IP_CACHE.get("expires_at") or 0.0)
+    if cached_value and now < cached_expires:
+        return cached_value
+
+    endpoints = (
+        "https://api.ipify.org",
+        "https://ifconfig.me/ip",
+        "https://ipv4.icanhazip.com",
+    )
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for endpoint in endpoints:
+            try:
+                response = await client.get(endpoint)
+                if response.status_code != 200:
+                    continue
+                ip = response.text.strip()
+                if not ip:
+                    continue
+                _PUBLIC_IP_CACHE["value"] = ip
+                _PUBLIC_IP_CACHE["expires_at"] = now + 120
+                return ip
+            except Exception:
+                continue
+
+    return None
 
 
 @asynccontextmanager
@@ -820,6 +856,127 @@ async def list_all_transactions(
                 "updated_at": order.updated_at.isoformat(),
             }
             for order in orders
+        ],
+    }
+
+
+@app.get("/admin/complaints-ip")
+async def admin_complaints_with_ip(
+    request: Request,
+    _: None = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """
+    Admin diagnostics endpoint: list complaints and include IP info useful for payout whitelist checks.
+    """
+    from db.models import Complaint, DisputeStatus, Order, SellerProfile
+
+    normalized_status: DisputeStatus | None = None
+    if status:
+        try:
+            normalized_status = DisputeStatus[status.strip().upper()]
+        except KeyError:
+            allowed = ", ".join(item.value for item in DisputeStatus)
+            raise HTTPException(status_code=400, detail=f"Invalid status. Allowed: {allowed}")
+
+    total_query = select(func.count(Complaint.id))
+    if normalized_status:
+        total_query = total_query.where(Complaint.status == normalized_status)
+    total_result = await session.execute(total_query)
+    total = total_result.scalar() or 0
+
+    complaints_query = (
+        select(Complaint)
+        .options(
+            joinedload(Complaint.complainant),
+            joinedload(Complaint.order)
+            .joinedload(Order.listing),
+            joinedload(Complaint.order)
+            .joinedload(Order.seller)
+            .joinedload(SellerProfile.user),
+            joinedload(Complaint.order)
+            .joinedload(Order.buyer),
+        )
+        .order_by(Complaint.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    if normalized_status:
+        complaints_query = complaints_query.where(Complaint.status == normalized_status)
+
+    complaints_result = await session.execute(complaints_query)
+    complaints = complaints_result.scalars().all()
+
+    public_ip = await _resolve_public_egress_ip()
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "status_filter": normalized_status.value if normalized_status else None,
+        "ip": {
+            "public_egress_ip": public_ip,
+            "request_client_ip": request.client.host if request.client else None,
+            "x_forwarded_for": request.headers.get("x-forwarded-for"),
+            "x_real_ip": request.headers.get("x-real-ip"),
+        },
+        "complaints": [
+            {
+                "complaint_id": complaint.id,
+                "order_id": complaint.order_id,
+                "status": complaint.status.value,
+                "subject": complaint.subject,
+                "description": complaint.description,
+                "evidence_url": complaint.evidence_url,
+                "resolution": complaint.resolution,
+                "resolved_at": complaint.resolved_at.isoformat() if complaint.resolved_at else None,
+                "created_at": complaint.created_at.isoformat(),
+                "updated_at": complaint.updated_at.isoformat(),
+                "complainant": {
+                    "user_id": complaint.complainant.id if complaint.complainant else None,
+                    "telegram_id": complaint.complainant.telegram_id if complaint.complainant else None,
+                    "name": (
+                        f"{complaint.complainant.first_name} {complaint.complainant.last_name or ''}".strip()
+                        if complaint.complainant
+                        else None
+                    ),
+                    "username": complaint.complainant.username if complaint.complainant else None,
+                },
+                "order": {
+                    "status": complaint.order.status.value if complaint.order else None,
+                    "amount": str(complaint.order.amount) if complaint.order else None,
+                    "transaction_ref": complaint.order.transaction_ref if complaint.order else None,
+                    "listing": {
+                        "listing_id": complaint.order.listing.id if complaint.order and complaint.order.listing else None,
+                        "listing_code": (
+                            complaint.order.listing.listing_code if complaint.order and complaint.order.listing else None
+                        ),
+                        "title": complaint.order.listing.title if complaint.order and complaint.order.listing else None,
+                    },
+                    "buyer": {
+                        "user_id": complaint.order.buyer.id if complaint.order and complaint.order.buyer else None,
+                        "telegram_id": (
+                            complaint.order.buyer.telegram_id if complaint.order and complaint.order.buyer else None
+                        ),
+                        "name": complaint.order.buyer.first_name if complaint.order and complaint.order.buyer else None,
+                    },
+                    "seller": {
+                        "seller_id": complaint.order.seller.id if complaint.order and complaint.order.seller else None,
+                        "seller_code": (
+                            complaint.order.seller.seller_code if complaint.order and complaint.order.seller else None
+                        ),
+                        "name": (
+                            complaint.order.seller.user.first_name
+                            if complaint.order and complaint.order.seller and complaint.order.seller.user
+                            else None
+                        ),
+                    },
+                },
+            }
+            for complaint in complaints
         ],
     }
 
