@@ -114,6 +114,7 @@ def _build_category_page_keyboard(
         )
     if nav_row:
         rows.append(nav_row)
+    rows.append([InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")])
     rows.append([InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -123,12 +124,14 @@ def _build_listing_card_keyboard(listing: Listing) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="Out of Stock", callback_data="stock_unavailable")],
+                [InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")],
                 [InlineKeyboardButton(text="Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
             ]
         )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Add to Cart", callback_data=f"add_to_cart_{listing.id}")],
+            [InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")],
             [InlineKeyboardButton(text="Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
         ]
     )
@@ -136,7 +139,10 @@ def _build_listing_card_keyboard(listing: Listing) -> InlineKeyboardMarkup:
 
 def _build_category_bottom_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")],
+            [InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")],
+        ]
     )
 
 
