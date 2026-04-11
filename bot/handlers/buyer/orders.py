@@ -3,7 +3,7 @@ Buyer orders handler - view orders, confirm receipt, raise disputes.
 """
 
 from aiogram import F, Router
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -44,6 +44,79 @@ async def _effective_delivery(order: Order, session: AsyncSession) -> Delivery |
         .limit(1)
     )
     return result.scalars().first()
+
+
+async def _group_confirmable_orders(order: Order, buyer_id: int, session: AsyncSession) -> list[Order]:
+    delivery = await _effective_delivery(order, session)
+    if not delivery:
+        return [order]
+
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.listing))
+        .join(DeliveryOrder, DeliveryOrder.order_id == Order.id)
+        .where(DeliveryOrder.delivery_id == delivery.id)
+        .where(Order.buyer_id == buyer_id)
+        .where(Order.status == OrderStatus.PAID)
+        .where(Order.delivered_at.is_not(None))
+        .order_by(DeliveryOrder.sequence.asc(), Order.id.asc())
+    )
+    grouped = result.scalars().all()
+    return grouped or [order]
+
+
+def _group_confirm_keyboard(orders: list[Order]) -> InlineKeyboardMarkup:
+    rows = []
+    for order in orders:
+        title = order.listing.title if order.listing else "Item"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"Confirm #{order.id} ({title})",
+                    callback_data=f"order_confirm_item_{order.id}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _confirm_single_order_receipt(callback: CallbackQuery, session: AsyncSession, order: Order) -> None:
+    escrow_service = get_escrow_service()
+    released = await escrow_service.release_escrow(order.id, session)
+    if not released:
+        await safe_replace_with_screen(
+            callback,
+            "Could not release seller payment right now. Please try again.",
+            reply_markup=get_main_menu_inline(),
+        )
+        return
+
+    order.auto_release_scheduled_at = None
+    await session.commit()
+
+    seller_user = order.seller.user if order.seller else None
+    if seller_user and seller_user.telegram_id:
+        try:
+            await callback.bot.send_message(
+                chat_id=int(seller_user.telegram_id),
+                text=(
+                    f"Order #{order.id} has been confirmed by the buyer.\n"
+                    f"Escrow released: NGN {order.amount:,.2f}."
+                ),
+            )
+        except Exception:
+            pass
+
+    await safe_replace_with_screen(
+        callback,
+        "<b>Receipt Confirmed</b>\n\n"
+        "Thank you for shopping with VenDOOR.\n"
+        f"Seller has been paid NGN {order.amount:,.2f}\n\n"
+        f"Order #{order.id} complete.",
+        parse_mode="HTML",
+        reply_markup=get_main_menu_inline(),
+    )
 
 
 @router.callback_query(F.data == "my_orders")
@@ -173,7 +246,7 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
     )
 
 
-@router.callback_query(F.data.startswith("order_confirm_"))
+@router.callback_query(F.data.regexp(r"^order_confirm_\d+$"))
 async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
     order_id = _callback_int_suffix(callback.data, "order_confirm_")
     if order_id is None:
@@ -217,43 +290,61 @@ async def confirm_receipt(callback: CallbackQuery, session: AsyncSession):
         return
 
     await safe_answer_callback(callback)
-
-    try:
-        escrow_service = get_escrow_service()
-        released = await escrow_service.release_escrow(order.id, session)
-        if not released:
-            await safe_replace_with_screen(
-                callback,
-                "Could not release seller payment right now. Please try again.",
-                reply_markup=get_main_menu_inline(),
-            )
-            return
-
-        order.auto_release_scheduled_at = None
-        await session.commit()
-
-        seller_user = order.seller.user if order.seller else None
-        if seller_user and seller_user.telegram_id:
-            try:
-                await callback.bot.send_message(
-                    chat_id=int(seller_user.telegram_id),
-                    text=(
-                        f"Order #{order.id} has been confirmed by the buyer.\n"
-                        f"Escrow released: NGN {order.amount:,.2f}."
-                    ),
-                )
-            except Exception:
-                pass
-
+    grouped_orders = await _group_confirmable_orders(order, user.id, session)
+    if len(grouped_orders) > 1:
+        text = ["<b>Confirm Delivered Items</b>", ""]
+        for grouped_order in grouped_orders:
+            item_title = grouped_order.listing.title if grouped_order.listing else "Item"
+            text.append(f"Order #{grouped_order.id}: {grouped_order.quantity} x {item_title}")
+        text.append("")
+        text.append("Tap each button below to confirm receipt item-by-item.")
         await safe_replace_with_screen(
             callback,
-            "<b>Receipt Confirmed</b>\n\n"
-            "Thank you for shopping with VenDOOR.\n"
-            f"Seller has been paid NGN {order.amount:,.2f}\n\n"
-            f"Order #{order.id} complete.",
+            "\n".join(text),
             parse_mode="HTML",
-            reply_markup=get_main_menu_inline(),
+            reply_markup=_group_confirm_keyboard(grouped_orders),
         )
+        return
+
+    try:
+        await _confirm_single_order_receipt(callback, session, order)
+    except Exception:
+        await session.rollback()
+        await safe_replace_with_screen(callback, "Could not confirm receipt right now. Please try again.")
+
+
+@router.callback_query(F.data.regexp(r"^order_confirm_item_\d+$"))
+async def confirm_receipt_group_item(callback: CallbackQuery, session: AsyncSession):
+    order_id = _callback_int_suffix((callback.data or "").replace("order_confirm_item_", "order_confirm_"), "order_confirm_")
+    if order_id is None:
+        await safe_answer_callback(callback, text="Invalid order confirmation", show_alert=True)
+        return
+
+    user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
+    user = user_result.scalars().first()
+    if not user:
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
+        return
+
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.seller).selectinload(SellerProfile.user), selectinload(Order.listing))
+        .where(Order.id == order_id)
+    )
+    order = result.scalars().first()
+    if not order:
+        await safe_answer_callback(callback, text="Order not found", show_alert=True)
+        return
+    if order.buyer_id != user.id:
+        await safe_answer_callback(callback, text="You can only confirm your own orders", show_alert=True)
+        return
+    if order.status != OrderStatus.PAID or not order.delivered_at:
+        await safe_answer_callback(callback, text="This order is not ready for receipt confirmation.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    try:
+        await _confirm_single_order_receipt(callback, session, order)
     except Exception:
         await session.rollback()
         await safe_replace_with_screen(callback, "Could not confirm receipt right now. Please try again.")

@@ -1,6 +1,7 @@
 """Delivery agent handlers for multi-seller pickup and delivery status updates via Telegram bot."""
 
 from decimal import Decimal
+import re
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -433,6 +434,16 @@ def _arrival_keyboard(delivery_id: int, delivery_order_id: int) -> InlineKeyboar
     )
 
 
+def _post_pickup_next_keyboard(delivery_id: int, has_next: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if has_next:
+        rows.append(
+            [InlineKeyboardButton(text="Proceed to Next Location", callback_data=f"delivery_proceed_next_{delivery_id}")]
+        )
+    rows.append([InlineKeyboardButton(text="Open Another Order", callback_data="delivery_hub")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _delivery_progress_keyboard(delivery_id: int, stage: str) -> InlineKeyboardMarkup:
     if stage == "ready_in_transit":
         return InlineKeyboardMarkup(
@@ -643,7 +654,7 @@ async def delivery_start_pickup(callback: CallbackQuery, state: FSMContext, sess
 
 
 @router.callback_query(F.data.startswith("delivery_arrived_"))
-async def delivery_arrived_at_seller(callback: CallbackQuery, state: FSMContext):
+async def delivery_arrived_at_seller(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
     """Agent confirms arrival at seller location, then uploads pickup proof photo."""
 
     delivery_order_id = _parse_callback_id(callback.data, "delivery_arrived_")
@@ -651,11 +662,28 @@ async def delivery_arrived_at_seller(callback: CallbackQuery, state: FSMContext)
         await safe_answer_callback(callback, "Invalid delivery order ID", show_alert=True)
         return
 
-    data = await state.get_data()
-    expected_id = data.get("current_delivery_order_id")
-    if expected_id is not None and int(expected_id) != delivery_order_id:
-        await safe_answer_callback(callback, "This stop is no longer active", show_alert=True)
+    if callback.from_user is None:
+        await safe_answer_callback(callback, "Unable to identify delivery agent", show_alert=True)
         return
+    agent = await get_agent_by_telegram_id(callback.from_user.id, session)
+    if not agent:
+        await safe_answer_callback(callback, "Agent profile not found", show_alert=True)
+        return
+
+    delivery_order = await session.get(DeliveryOrder, int(delivery_order_id))
+    if not delivery_order:
+        await safe_answer_callback(callback, "Delivery stop not found", show_alert=True)
+        return
+    delivery = await session.get(Delivery, int(delivery_order.delivery_id))
+    if not delivery or delivery.agent_id != agent.id:
+        await safe_answer_callback(callback, "This stop is not assigned to you", show_alert=True)
+        return
+
+    await state.update_data(
+        delivery_id=int(delivery_order.delivery_id),
+        current_delivery_order_id=int(delivery_order.id),
+        current_order_id=int(delivery_order.order_id),
+    )
 
     await safe_answer_callback(callback)
     await _safe_edit_or_reply(
@@ -698,12 +726,30 @@ async def receive_pickup_photo(message: Message, state: FSMContext, session: Asy
 
     await session.commit()
 
+    if not delivery_orders_data:
+        delivery = await get_delivery_with_orders(int(delivery_id), session)
+        delivery_orders = sorted(delivery.delivery_orders or [], key=lambda item: (item.sequence, item.id)) if delivery else []
+        delivery_orders_data = [
+            {"id": int(delivery_order.id), "order_id": int(delivery_order.order_id), "sequence": int(delivery_order.sequence)}
+            for delivery_order in delivery_orders
+        ]
+        await state.update_data(delivery_orders_data=delivery_orders_data)
+
+    if delivery_orders_data:
+        for idx, delivery_order_data in enumerate(delivery_orders_data):
+            if int(delivery_order_data["id"]) == int(delivery_order_id):
+                order_index = idx
+                break
+
     next_index = order_index + 1
     await state.update_data(order_index=next_index)
 
     if next_index < len(delivery_orders_data):
-        await message.answer("Pickup confirmed. Moving to next seller.")
-        await _show_next_seller_confirmation_from_message(message, state, session)
+        await state.set_state(None)
+        await message.answer(
+            "Pickup saved as done for this stop.\n\nProceed to next location now?",
+            reply_markup=_post_pickup_next_keyboard(int(delivery_id), has_next=True),
+        )
         return
 
     agent = None
@@ -717,6 +763,59 @@ async def receive_pickup_photo(message: Message, state: FSMContext, session: Asy
         reply_markup=_delivery_progress_keyboard(int(delivery_id), stage="ready_in_transit"),
     )
     await state.clear()
+
+
+@router.callback_query(F.data.regexp(r"^delivery_proceed_next_\d+$"))
+async def delivery_proceed_next(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    match = re.match(r"^delivery_proceed_next_(\d+)$", callback.data or "")
+    if not match:
+        await safe_answer_callback(callback, "Invalid delivery selection", show_alert=True)
+        return
+    delivery_id = int(match.group(1))
+
+    if callback.from_user is None:
+        await safe_answer_callback(callback, "Unable to identify delivery agent", show_alert=True)
+        return
+    agent = await get_agent_by_telegram_id(callback.from_user.id, session)
+    if not agent:
+        await safe_answer_callback(callback, "Agent profile not found", show_alert=True)
+        return
+
+    delivery = await get_delivery_with_orders(delivery_id, session)
+    if not delivery or delivery.agent_id != agent.id:
+        await safe_answer_callback(callback, "This delivery is not assigned to you.", show_alert=True)
+        return
+
+    delivery_orders = sorted(delivery.delivery_orders or [], key=lambda item: (item.sequence, item.id))
+    if not delivery_orders:
+        await safe_answer_callback(callback, "No pickup stops found for this delivery.", show_alert=True)
+        return
+
+    next_index = 0
+    for idx, delivery_order in enumerate(delivery_orders):
+        if delivery_order.picked_up_at is None:
+            next_index = idx
+            break
+    else:
+        await safe_answer_callback(callback)
+        await _safe_edit_or_reply(
+            callback,
+            "All items for this delivery are already collected.",
+            reply_markup=_delivery_progress_keyboard(delivery_id, stage="ready_in_transit"),
+        )
+        await state.clear()
+        return
+
+    await state.update_data(
+        delivery_id=delivery_id,
+        order_index=next_index,
+        delivery_orders_data=[
+            {"id": int(delivery_order.id), "order_id": int(delivery_order.order_id), "sequence": int(delivery_order.sequence)}
+            for delivery_order in delivery_orders
+        ],
+    )
+    await safe_answer_callback(callback)
+    await _show_next_seller_confirmation(callback, state, session)
 
 
 @router.callback_query(F.data.startswith("delivery_in_transit_"))
