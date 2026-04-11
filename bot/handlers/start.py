@@ -27,7 +27,6 @@ from bot.keyboards.main_menu import (
     MENU_SELLER,
     MENU_TERMS,
     get_main_menu_inline,
-    get_main_menu_reply,
 )
 from db.models import User
 
@@ -74,31 +73,22 @@ async def start_handler(message: Message, session: AsyncSession):
     if welcome_banner:
         await message.answer_photo(
             photo=welcome_banner,
-            caption=WELCOME_TEXT,
+            caption="<b>Welcome to VenDOOR</b>",
             parse_mode="HTML",
-            reply_markup=get_main_menu_reply(),
+            reply_markup=get_main_menu_inline(),
         )
     else:
         await message.answer(
             WELCOME_TEXT,
             parse_mode="HTML",
-            reply_markup=get_main_menu_reply(),
+            reply_markup=get_main_menu_inline(),
         )
-
-    await message.answer(
-        "Quick access menu is active below. You can also tap inline buttons on screens.",
-        reply_markup=get_main_menu_reply(),
-    )
 
 
 @router.callback_query(F.data == "back_to_menu")
 async def back_to_menu_handler(callback: CallbackQuery):
     await safe_answer_callback(callback)
-    menu_text = (
-        "<b>VenDOOR Main Menu</b>\n"
-        "buy. sell. secure.\n\n"
-        "What would you like to do today?"
-    )
+    menu_text = "<b>VenDOOR</b>"
     main_menu_banner = get_main_menu_banner()
     await safe_replace_with_screen(
         callback,
@@ -107,8 +97,6 @@ async def back_to_menu_handler(callback: CallbackQuery):
         parse_mode="HTML",
         reply_markup=get_main_menu_inline(),
     )
-    if callback.message:
-        await callback.message.answer("Main menu ready.", reply_markup=get_main_menu_reply())
 
 
 @router.callback_query(F.data == "help")
@@ -142,8 +130,6 @@ async def help_handler(callback: CallbackQuery):
         parse_mode="HTML",
         reply_markup=get_main_menu_inline(),
     )
-    if callback.message:
-        await callback.message.answer("You can always use the quick menu below.", reply_markup=get_main_menu_reply())
 
 
 @router.callback_query(F.data == "terms_conditions")
@@ -169,8 +155,6 @@ async def terms_conditions_handler(callback: CallbackQuery):
         parse_mode="HTML",
         reply_markup=get_main_menu_inline(),
     )
-    if callback.message:
-        await callback.message.answer("Quick menu is still active below.", reply_markup=get_main_menu_reply())
 
 
 @router.message(F.text.in_([MENU_BROWSE, MENU_CART, MENU_ORDERS, MENU_SELLER, MENU_LISTINGS, MENU_COMPLAINTS, MENU_HELP, MENU_DELIVERY, MENU_TERMS]))

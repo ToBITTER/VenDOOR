@@ -54,7 +54,7 @@ def get_main_menu_reply() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="Please select an action",
+        input_field_placeholder="",
     )
 
 

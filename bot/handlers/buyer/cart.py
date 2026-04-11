@@ -86,12 +86,6 @@ async def add_to_cart(callback: CallbackQuery, session: AsyncSession):
 
     await session.commit()
     await safe_answer_callback(callback, text="Added to cart.")
-    if callback.message:
-        await safe_replace_with_screen(
-            callback,
-            "Item added to cart. What would you like to do next?",
-            reply_markup=_post_add_to_cart_keyboard(),
-        )
 
 
 @router.callback_query(F.data == "my_cart")
