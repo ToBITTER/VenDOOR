@@ -7,6 +7,7 @@ import hashlib
 import logging
 import re
 import secrets
+import httpx
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramRetryAfter
@@ -28,6 +29,7 @@ from db.models import (
     AdminUser,
     CartItem,
     Complaint,
+    DisputeStatus,
     Delivery,
     DeliveryAgent,
     DeliveryEvent,
@@ -44,6 +46,7 @@ from db.models import (
 router = Router()
 settings = get_settings()
 logger = logging.getLogger(__name__)
+_PUBLIC_IP_CACHE: dict[str, float | str] = {"value": "", "expires_at": 0.0}
 
 
 async def _ensure_delivery_order_link(session: AsyncSession, delivery_id: int, order_id: int) -> None:
@@ -138,6 +141,7 @@ def _admin_tools_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Vendors", callback_data="admin_vendors"),
                 InlineKeyboardButton(text="Pending Sellers", callback_data="admin_pending_refresh"),
             ],
+            [InlineKeyboardButton(text="Complaints + IP", callback_data="admin_complaints_ip")],
             [
                 InlineKeyboardButton(text="Delivery Agents", callback_data="admin_delivery_agents"),
                 InlineKeyboardButton(text="Add Agent", callback_data="admin_delivery_agent_add"),
@@ -259,6 +263,36 @@ async def _find_listing_by_identifier(session: AsyncSession, identifier: str) ->
             return listing
     result = await session.execute(select(Listing).where(Listing.listing_code == ident.upper()))
     return result.scalars().first()
+
+
+async def _resolve_public_egress_ip() -> str:
+    now = asyncio.get_running_loop().time()
+    cached_value = str(_PUBLIC_IP_CACHE.get("value") or "").strip()
+    cached_expires = float(_PUBLIC_IP_CACHE.get("expires_at") or 0.0)
+    if cached_value and now < cached_expires:
+        return cached_value
+
+    endpoints = (
+        "https://api.ipify.org",
+        "https://ifconfig.me/ip",
+        "https://ipv4.icanhazip.com",
+    )
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for endpoint in endpoints:
+            try:
+                response = await client.get(endpoint)
+                if response.status_code != 200:
+                    continue
+                ip = response.text.strip()
+                if not ip:
+                    continue
+                _PUBLIC_IP_CACHE["value"] = ip
+                _PUBLIC_IP_CACHE["expires_at"] = now + 120
+                return ip
+            except Exception:
+                continue
+
+    return "Unavailable"
 
 
 def _broadcast_audience_keyboard() -> InlineKeyboardMarkup:
@@ -458,6 +492,63 @@ async def _render_payouts_text(session: AsyncSession, limit: int = 15) -> str:
         )
     if text.strip() == "<b>Payout Monitor (latest 15)</b>":
         return "<b>Payout Monitor</b>\n\nNo payout records yet."
+    return text
+
+
+async def _render_complaints_ip_text(session: AsyncSession, limit: int = 10) -> str:
+    total_result = await session.execute(select(func.count(Complaint.id)))
+    total = total_result.scalar() or 0
+
+    open_result = await session.execute(
+        select(func.count(Complaint.id)).where(Complaint.status == DisputeStatus.OPEN)
+    )
+    open_count = open_result.scalar() or 0
+
+    investigating_result = await session.execute(
+        select(func.count(Complaint.id)).where(Complaint.status == DisputeStatus.INVESTIGATING)
+    )
+    investigating_count = investigating_result.scalar() or 0
+
+    result = await session.execute(
+        select(Complaint)
+        .options(
+            joinedload(Complaint.order).joinedload(Order.listing),
+            joinedload(Complaint.complainant),
+        )
+        .order_by(Complaint.created_at.desc())
+        .limit(limit)
+    )
+    complaints = result.scalars().all()
+
+    public_ip = await _resolve_public_egress_ip()
+
+    text = (
+        "<b>Complaints + IP</b>\n\n"
+        f"<b>Public Egress IP:</b> <code>{public_ip}</code>\n\n"
+        f"<b>Total Complaints:</b> {total}\n"
+        f"<b>Open:</b> {open_count}\n"
+        f"<b>Investigating:</b> {investigating_count}\n\n"
+    )
+
+    if not complaints:
+        return text + "No complaints found."
+
+    text += "<b>Latest Complaints</b>\n\n"
+    for complaint in complaints:
+        listing_title = (
+            complaint.order.listing.title
+            if complaint.order and complaint.order.listing
+            else "Unknown item"
+        )
+        complainant_name = complaint.complainant.first_name if complaint.complainant else "Unknown"
+        text += (
+            f"#{complaint.id} | Order #{complaint.order_id}\n"
+            f"Status: {complaint.status.value}\n"
+            f"By: {complainant_name}\n"
+            f"Item: {listing_title}\n"
+            f"Subject: {complaint.subject}\n\n"
+        )
+
     return text
 
 
@@ -1015,6 +1106,7 @@ async def open_admin_tools(callback: CallbackQuery, state: FSMContext, session: 
         "- Payouts\n"
         "- Vendors\n"
         "- Listings\n"
+        "- Complaints + IP\n"
         "- Delivery Agents\n"
         "- Pending Sellers\n"
         "- Vendor Privileges\n"
@@ -1087,6 +1179,21 @@ async def admin_payouts(callback: CallbackQuery, session: AsyncSession):
         text,
         parse_mode="HTML",
         reply_markup=await _payouts_keyboard(session),
+    )
+
+
+@router.callback_query(F.data == "admin_complaints_ip")
+async def admin_complaints_ip(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    text = await _render_complaints_ip_text(session)
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
     )
 
 
