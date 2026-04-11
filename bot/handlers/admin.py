@@ -3,6 +3,7 @@ Admin handlers for seller verification workflows.
 """
 
 import asyncio
+from datetime import datetime, timezone
 import hashlib
 import logging
 import re
@@ -523,17 +524,19 @@ async def _render_complaints_ip_text(session: AsyncSession, limit: int = 10) -> 
     public_ip = await _resolve_public_egress_ip()
 
     text = (
-        "<b>Complaints + IP</b>\n\n"
-        f"<b>Public Egress IP:</b> <code>{public_ip}</code>\n\n"
-        f"<b>Total Complaints:</b> {total}\n"
-        f"<b>Open:</b> {open_count}\n"
-        f"<b>Investigating:</b> {investigating_count}\n\n"
+        "<b>Complaints Dashboard</b>\n\n"
+        "<b>IP Diagnostics</b>\n"
+        f"Public Egress IP: <code>{public_ip}</code>\n\n"
+        "<b>Complaint Queue</b>\n"
+        f"Total: {total}\n"
+        f"Open: {open_count}\n"
+        f"Investigating: {investigating_count}\n\n"
     )
 
     if not complaints:
         return text + "No complaints found."
 
-    text += "<b>Latest Complaints</b>\n\n"
+    text += "<b>Latest Complaints</b>\n"
     for complaint in complaints:
         listing_title = (
             complaint.order.listing.title
@@ -542,14 +545,94 @@ async def _render_complaints_ip_text(session: AsyncSession, limit: int = 10) -> 
         )
         complainant_name = complaint.complainant.first_name if complaint.complainant else "Unknown"
         text += (
-            f"#{complaint.id} | Order #{complaint.order_id}\n"
-            f"Status: {complaint.status.value}\n"
+            f"\n#{complaint.id} | Order #{complaint.order_id} | {complaint.status.value}\n"
             f"By: {complainant_name}\n"
-            f"Item: {listing_title}\n"
-            f"Subject: {complaint.subject}\n\n"
+            f"Item: {listing_title[:32]}\n"
+            f"Subject: {complaint.subject[:48]}\n"
         )
 
     return text
+
+
+async def _fetch_recent_complaints(session: AsyncSession, limit: int = 8) -> list[Complaint]:
+    result = await session.execute(
+        select(Complaint)
+        .options(
+            joinedload(Complaint.order).joinedload(Order.listing),
+            joinedload(Complaint.complainant),
+        )
+        .order_by(Complaint.created_at.desc())
+        .limit(limit)
+    )
+    return result.scalars().all()
+
+
+def _complaints_dashboard_keyboard(complaints: list[Complaint]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for complaint in complaints:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"View #{complaint.id}",
+                    callback_data=f"admin_complaint_view_{complaint.id}",
+                )
+            ]
+        )
+        if complaint.status == DisputeStatus.OPEN:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"#{complaint.id} Investigating",
+                        callback_data=f"admin_complaint_set_{complaint.id}_I",
+                    ),
+                    InlineKeyboardButton(
+                        text=f"#{complaint.id} Resolved",
+                        callback_data=f"admin_complaint_set_{complaint.id}_R",
+                    ),
+                ]
+            )
+        elif complaint.status == DisputeStatus.INVESTIGATING:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"#{complaint.id} Resolved",
+                        callback_data=f"admin_complaint_set_{complaint.id}_R",
+                    ),
+                    InlineKeyboardButton(
+                        text=f"#{complaint.id} Closed",
+                        callback_data=f"admin_complaint_set_{complaint.id}_C",
+                    ),
+                ]
+            )
+
+    rows.append([InlineKeyboardButton(text="Refresh", callback_data="admin_complaints_ip")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    rows.append([InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _complaint_detail_keyboard(complaint_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Set Investigating",
+                    callback_data=f"admin_complaint_set_{complaint_id}_I",
+                ),
+                InlineKeyboardButton(
+                    text="Set Resolved",
+                    callback_data=f"admin_complaint_set_{complaint_id}_R",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Set Closed",
+                    callback_data=f"admin_complaint_set_{complaint_id}_C",
+                )
+            ],
+            [InlineKeyboardButton(text="Back to Complaints", callback_data="admin_complaints_ip")],
+        ]
+    )
 
 
 async def _payouts_keyboard(session: AsyncSession) -> InlineKeyboardMarkup:
@@ -1189,11 +1272,129 @@ async def admin_complaints_ip(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
     text = await _render_complaints_ip_text(session)
+    complaints = await _fetch_recent_complaints(session)
     await safe_replace_with_screen(
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=_admin_tools_keyboard(),
+        reply_markup=_complaints_dashboard_keyboard(complaints),
+    )
+
+
+@router.callback_query(F.data.startswith("admin_complaint_view_"))
+async def admin_complaint_view(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    complaint_id = _callback_int_suffix(callback.data, "admin_complaint_view_")
+    if complaint_id is None:
+        await safe_edit_text(callback, "Invalid complaint payload.", reply_markup=_admin_tools_keyboard())
+        return
+
+    result = await session.execute(
+        select(Complaint)
+        .options(
+            joinedload(Complaint.order).joinedload(Order.listing),
+            joinedload(Complaint.complainant),
+        )
+        .where(Complaint.id == complaint_id)
+    )
+    complaint = result.scalars().first()
+    if not complaint:
+        await safe_edit_text(callback, "Complaint not found.", reply_markup=_admin_tools_keyboard())
+        return
+
+    listing_title = (
+        complaint.order.listing.title
+        if complaint.order and complaint.order.listing
+        else "Unknown item"
+    )
+    complainant_name = (
+        f"{complaint.complainant.first_name} {complaint.complainant.last_name or ''}".strip()
+        if complaint.complainant
+        else "Unknown"
+    )
+    complainant_tg = complaint.complainant.telegram_id if complaint.complainant else "N/A"
+    detail_text = (
+        f"<b>Complaint #{complaint.id}</b>\n\n"
+        f"<b>Status:</b> {complaint.status.value}\n"
+        f"<b>Order:</b> #{complaint.order_id}\n"
+        f"<b>Complainant:</b> {complainant_name}\n"
+        f"<b>Telegram ID:</b> <code>{complainant_tg}</code>\n"
+        f"<b>Item:</b> {listing_title}\n"
+        f"<b>Subject:</b> {complaint.subject}\n"
+        f"<b>Description:</b>\n{complaint.description}\n\n"
+        f"<b>Created:</b> {complaint.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+        f"<b>Evidence:</b> {'Attached' if complaint.evidence_url else 'None'}"
+    )
+    await safe_replace_with_screen(
+        callback,
+        detail_text,
+        parse_mode="HTML",
+        reply_markup=_complaint_detail_keyboard(complaint.id),
+    )
+
+
+@router.callback_query(F.data.startswith("admin_complaint_set_"))
+async def admin_complaint_set_status(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    payload = (callback.data or "").strip()
+    parts = payload.split("_")
+    if len(parts) != 5 or not parts[3].isdigit():
+        await safe_edit_text(callback, "Invalid complaint status payload.", reply_markup=_admin_tools_keyboard())
+        return
+
+    complaint_id = int(parts[3])
+    status_code = parts[4].upper()
+    status_map = {
+        "I": DisputeStatus.INVESTIGATING,
+        "R": DisputeStatus.RESOLVED,
+        "C": DisputeStatus.CLOSED,
+    }
+    next_status = status_map.get(status_code)
+    if not next_status:
+        await safe_edit_text(callback, "Invalid complaint status.", reply_markup=_admin_tools_keyboard())
+        return
+
+    result = await session.execute(
+        select(Complaint)
+        .options(joinedload(Complaint.complainant))
+        .where(Complaint.id == complaint_id)
+    )
+    complaint = result.scalars().first()
+    if not complaint:
+        await safe_edit_text(callback, "Complaint not found.", reply_markup=_admin_tools_keyboard())
+        return
+
+    complaint.status = next_status
+    complaint.resolved_at = datetime.now(timezone.utc) if next_status in {DisputeStatus.RESOLVED, DisputeStatus.CLOSED} else None
+    await session.commit()
+
+    if complaint.complainant and complaint.complainant.telegram_id and complaint.complainant.telegram_id.isdigit():
+        try:
+            await callback.bot.send_message(
+                chat_id=int(complaint.complainant.telegram_id),
+                text=(
+                    f"Update on your complaint #{complaint.id} for order #{complaint.order_id}:\n"
+                    f"Status is now {complaint.status.value}."
+                ),
+            )
+        except Exception:
+            pass
+
+    text = await _render_complaints_ip_text(session)
+    complaints = await _fetch_recent_complaints(session)
+    await safe_replace_with_screen(
+        callback,
+        f"{text}\n\n<b>Updated:</b> Complaint #{complaint.id} -> {complaint.status.value}",
+        parse_mode="HTML",
+        reply_markup=_complaints_dashboard_keyboard(complaints),
     )
 
 
