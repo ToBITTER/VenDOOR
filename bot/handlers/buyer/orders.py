@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from bot.helpers.brand_assets import get_empty_state
 from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline, get_order_actions
-from db.models import Delivery, Order, OrderStatus, SellerProfile, User
+from db.models import Delivery, DeliveryOrder, Order, OrderStatus, SellerProfile, User
 from services.escrow import get_escrow_service
 
 router = Router()
@@ -25,6 +25,25 @@ def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
     if not value.isdigit():
         return None
     return int(value)
+
+
+async def _effective_delivery(order: Order, session: AsyncSession) -> Delivery | None:
+    """
+    Resolve shared delivery job for an order.
+    Falls back to DeliveryOrder link for grouped cart deliveries.
+    """
+    if order.delivery:
+        return order.delivery
+
+    result = await session.execute(
+        select(Delivery)
+        .options(selectinload(Delivery.agent))
+        .join(DeliveryOrder, DeliveryOrder.delivery_id == Delivery.id)
+        .where(DeliveryOrder.order_id == order.id)
+        .order_by(Delivery.created_at.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
 
 
 @router.callback_query(F.data == "my_orders")
@@ -60,6 +79,7 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
 
     text = "<b>Your Orders</b>\n\n"
     for order in orders[:5]:
+        effective_delivery = await _effective_delivery(order, session)
         status_emoji = {
             OrderStatus.PENDING: "PENDING",
             OrderStatus.PAID: "PAID",
@@ -75,7 +95,7 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
             f"Qty: {order.quantity}\n"
             f"Amount: NGN {order.amount:,.2f}\n"
             f"Status: {status_emoji}\n"
-            f"Delivery: {order.delivery.status.value if order.delivery else 'PENDING_ASSIGNMENT'}\n"
+            f"Delivery: {effective_delivery.status.value if effective_delivery else 'PENDING_ASSIGNMENT'}\n"
             f"Date: {order.created_at.strftime('%d/%m/%Y')}\n\n"
         )
 
@@ -138,8 +158,9 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
     if order.buyer_delivery_details:
         text += f"\n<b>Special Instructions:</b>\n{order.buyer_delivery_details}\n"
 
-    if order.delivery:
-        text += f"\n<b>Delivery Status:</b> {order.delivery.status.value}\n"
+    effective_delivery = await _effective_delivery(order, session)
+    if effective_delivery:
+        text += f"\n<b>Delivery Status:</b> {effective_delivery.status.value}\n"
     if order.delivery_eta_at:
         text += f"<b>ETA:</b> {order.delivery_eta_at.strftime('%d/%m/%Y %H:%M')}\n"
     text += f"\n<b>Date:</b> {order.created_at.strftime('%d/%m/%Y %H:%M')}"
@@ -270,12 +291,13 @@ async def track_order(callback: CallbackQuery, session: AsyncSession):
 
     await safe_answer_callback(callback)
 
-    delivery_status = order.delivery.status.value if order.delivery else "PENDING_ASSIGNMENT"
+    effective_delivery = await _effective_delivery(order, session)
+    delivery_status = effective_delivery.status.value if effective_delivery else "PENDING_ASSIGNMENT"
     agent_name = "To be assigned"
     agent_phone = "N/A"
-    if order.delivery and order.delivery.agent:
-        agent_name = order.delivery.agent.name or "Assigned"
-        agent_phone = order.delivery.agent.phone or "N/A"
+    if effective_delivery and effective_delivery.agent:
+        agent_name = effective_delivery.agent.name or "Assigned"
+        agent_phone = effective_delivery.agent.phone or "N/A"
 
     text = (
         f"<b>Track Order #{order.id}</b>\n\n"
@@ -284,8 +306,8 @@ async def track_order(callback: CallbackQuery, session: AsyncSession):
         f"<b>Agent:</b> {agent_name}\n"
         f"<b>Phone:</b> {agent_phone}\n"
     )
-    if order.delivery and order.delivery.current_location_note:
-        text += f"<b>Latest Location Note:</b> {order.delivery.current_location_note}\n"
+    if effective_delivery and effective_delivery.current_location_note:
+        text += f"<b>Latest Location Note:</b> {effective_delivery.current_location_note}\n"
     if order.delivered_at:
         text += f"<b>Delivered At:</b> {order.delivered_at.strftime('%d/%m/%Y %H:%M')}\n"
 

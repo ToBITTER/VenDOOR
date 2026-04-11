@@ -544,7 +544,7 @@ def _delivery_assign_pick_keyboard(deliveries: list[Delivery]) -> InlineKeyboard
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"Assign Order #{delivery.order_id}",
+                    text=f"Assign Delivery #{delivery.id}",
                     callback_data=f"admin_delivery_assign_{delivery.id}",
                 )
             ]
@@ -566,6 +566,32 @@ def _delivery_assign_agent_keyboard(delivery_id: int, agents: list[DeliveryAgent
             ]
         )
     rows.append([InlineKeyboardButton(text="Back to Assign Delivery", callback_data="admin_delivery_assign_picker")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _delivery_agents_keyboard(agents: list[DeliveryAgent]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for agent in agents:
+        if agent.is_active:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"Deactivate {agent.name} (#{agent.id})",
+                        callback_data=f"admin_delivery_agent_deactivate_{agent.id}",
+                    )
+                ]
+            )
+        else:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"Activate {agent.name} (#{agent.id})",
+                        callback_data=f"admin_delivery_agent_activate_{agent.id}",
+                    )
+                ]
+            )
+    rows.append([InlineKeyboardButton(text="Refresh", callback_data="admin_delivery_agents")])
     rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1118,13 +1144,57 @@ async def admin_delivery_agents(callback: CallbackQuery, session: AsyncSession):
         await safe_answer_callback(callback, text="Not authorized", show_alert=True)
         return
     await safe_answer_callback(callback)
+    result = await session.execute(
+        select(DeliveryAgent)
+        .order_by(DeliveryAgent.created_at.desc())
+        .limit(20)
+    )
+    agents = result.scalars().all()
     text = await _render_delivery_agents_text(session)
     await safe_replace_with_screen(
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=_admin_tools_keyboard(),
+        reply_markup=_delivery_agents_keyboard(agents),
     )
+
+
+@router.callback_query(F.data.startswith("admin_delivery_agent_activate_"))
+async def admin_delivery_agent_activate(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    agent_id = _callback_int_suffix(callback.data, "admin_delivery_agent_activate_")
+    if agent_id is None:
+        await safe_edit_text(callback, "Invalid agent payload.", reply_markup=_admin_tools_keyboard())
+        return
+    agent = await session.get(DeliveryAgent, agent_id)
+    if not agent:
+        await safe_edit_text(callback, "Agent not found.", reply_markup=_admin_tools_keyboard())
+        return
+    agent.is_active = True
+    await session.commit()
+    await admin_delivery_agents(callback, session)
+
+
+@router.callback_query(F.data.startswith("admin_delivery_agent_deactivate_"))
+async def admin_delivery_agent_deactivate(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    agent_id = _callback_int_suffix(callback.data, "admin_delivery_agent_deactivate_")
+    if agent_id is None:
+        await safe_edit_text(callback, "Invalid agent payload.", reply_markup=_admin_tools_keyboard())
+        return
+    agent = await session.get(DeliveryAgent, agent_id)
+    if not agent:
+        await safe_edit_text(callback, "Agent not found.", reply_markup=_admin_tools_keyboard())
+        return
+    agent.is_active = False
+    await session.commit()
+    await admin_delivery_agents(callback, session)
 
 
 @router.callback_query(F.data == "admin_delivery_agent_add")
@@ -1313,7 +1383,7 @@ async def admin_delivery_assign_picker(callback: CallbackQuery, session: AsyncSe
     await safe_answer_callback(callback)
     result = await session.execute(
         select(Delivery)
-        .where(Delivery.status.in_([DeliveryStatus.PENDING_ASSIGNMENT, DeliveryStatus.ASSIGNED]))
+        .where(Delivery.status == DeliveryStatus.PENDING_ASSIGNMENT)
         .order_by(Delivery.updated_at.desc())
         .limit(15)
     )
@@ -1328,7 +1398,7 @@ async def admin_delivery_assign_picker(callback: CallbackQuery, session: AsyncSe
         return
     await safe_replace_with_screen(
         callback,
-        "<b>Assign Delivery</b>\n\nSelect an order to assign or re-assign an agent.",
+        "<b>Assign Delivery</b>\n\nSelect a pending delivery job to assign.",
         parse_mode="HTML",
         reply_markup=_delivery_assign_pick_keyboard(deliveries),
     )
@@ -1368,7 +1438,7 @@ async def admin_delivery_assign_select(callback: CallbackQuery, session: AsyncSe
 
     await safe_edit_text(
         callback,
-        f"<b>Assign Agent</b>\n\nOrder #{delivery.order_id} (Delivery #{delivery.id})",
+        f"<b>Assign Agent</b>\n\nDelivery #{delivery.id}",
         parse_mode="HTML",
         reply_markup=_delivery_assign_agent_keyboard(delivery.id, agents),
     )

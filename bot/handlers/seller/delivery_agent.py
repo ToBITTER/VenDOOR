@@ -13,7 +13,10 @@ from sqlalchemy.orm import joinedload
 
 from db.models import Delivery, DeliveryAgent, DeliveryOrder, DeliveryStatus, Order, SellerProfile
 from core.config import get_settings
-from services.delivery_notifications import notify_buyer_delivery_status_update
+from services.delivery_notifications import (
+    notify_buyer_all_pickups_completed,
+    notify_buyer_delivery_status_update,
+)
 from services.delivery_status import update_delivery_order_status, update_delivery_status
 
 router = Router()
@@ -467,6 +470,14 @@ def _pickup_stop_text(order: Order, step_num: int, total_steps: int) -> str:
     )
 
 
+def _pickup_checklist(delivery_orders_data: list[dict], current_index: int) -> str:
+    lines = ["", "<b>Pickup Checklist</b>"]
+    for idx, delivery_order_data in enumerate(delivery_orders_data, start=1):
+        marker = "[x]" if idx - 1 < current_index else "[ ]"
+        lines.append(f"{marker} Stop {idx}")
+    return "\n".join(lines)
+
+
 async def _show_next_seller_confirmation(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
     data = await state.get_data()
     delivery_id = data.get("delivery_id")
@@ -491,7 +502,7 @@ async def _show_next_seller_confirmation(callback: CallbackQuery, state: FSMCont
     total_steps = len(delivery_orders_data)
     await _safe_edit_or_reply(
         callback,
-        _pickup_stop_text(order, step_num, total_steps),
+        _pickup_stop_text(order, step_num, total_steps) + _pickup_checklist(delivery_orders_data, order_index),
         parse_mode="HTML",
         reply_markup=_arrival_keyboard(int(delivery_id), int(current_do_data["id"])),
     )
@@ -526,7 +537,7 @@ async def _show_next_seller_confirmation_from_message(
     step_num = order_index + 1
     total_steps = len(delivery_orders_data)
     await message.answer(
-        _pickup_stop_text(order, step_num, total_steps),
+        _pickup_stop_text(order, step_num, total_steps) + _pickup_checklist(delivery_orders_data, order_index),
         parse_mode="HTML",
         reply_markup=_arrival_keyboard(int(delivery_id), int(current_do_data["id"])),
     )
@@ -643,7 +654,6 @@ async def receive_pickup_photo(message: Message, state: FSMContext, session: Asy
         return
 
     await session.commit()
-    await notify_buyer_delivery_status_update(int(current_order_id), "PICKED_UP", None, session)
 
     next_index = order_index + 1
     await state.update_data(order_index=next_index)
@@ -653,8 +663,14 @@ async def receive_pickup_photo(message: Message, state: FSMContext, session: Asy
         await _show_next_seller_confirmation_from_message(message, state, session)
         return
 
+    agent = None
+    if message.from_user is not None:
+        agent = await get_agent_by_telegram_id(message.from_user.id, session)
+    await notify_buyer_all_pickups_completed(int(delivery_id), agent, session)
+
     await message.answer(
-        "All items collected.\n\nReady to proceed with delivery?",
+        "All items collected.\n\nReady to proceed with delivery?\n\n"
+        + _pickup_checklist(delivery_orders_data, len(delivery_orders_data)),
         reply_markup=_delivery_progress_keyboard(int(delivery_id), stage="ready_in_transit"),
     )
     await state.clear()

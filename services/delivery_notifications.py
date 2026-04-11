@@ -206,13 +206,71 @@ async def notify_buyer_delivery_status_update(
         return
 
     try:
+        reply_markup = None
+        if status == "DELIVERED":
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+            reply_markup = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Confirm Receipt", callback_data=f"order_confirm_{order.id}")]
+                ]
+            )
         await bot_instance.send_message(
             chat_id=order.buyer.telegram_id,
             text=message_text,
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_markup=reply_markup,
         )
     except Exception as e:
         print(f"Failed to notify buyer {order.buyer.telegram_id}: {e}")
+
+
+async def notify_buyer_all_pickups_completed(
+    delivery_id: int,
+    agent: DeliveryAgent | None,
+    session: AsyncSession,
+):
+    """
+    Notify buyer once all pickup stops are complete for a shared delivery.
+    """
+    if not bot_instance:
+        return
+
+    result = await session.execute(
+        select(DeliveryOrder)
+        .options(joinedload(DeliveryOrder.order).joinedload(Order.buyer))
+        .where(DeliveryOrder.delivery_id == delivery_id)
+        .order_by(DeliveryOrder.sequence.asc())
+    )
+    delivery_orders = [item for item in result.scalars().all() if item.order and item.order.buyer]
+    if not delivery_orders:
+        return
+
+    buyer = delivery_orders[0].order.buyer
+    if not buyer or not buyer.telegram_id:
+        return
+
+    total_stops = len(delivery_orders)
+    total_items = sum(item.order.quantity for item in delivery_orders if item.order)
+    message_text = (
+        "<b>Pickup Complete</b>\n\n"
+        f"All {total_stops} pickup stop(s) are done.\n"
+        f"Items collected: {total_items}\n\n"
+        "Your package is now ready to move in transit."
+    )
+    if agent:
+        message_text += f"\nDriver: {agent.name}"
+        if agent.phone:
+            message_text += f" | {agent.phone}"
+
+    try:
+        await bot_instance.send_message(
+            chat_id=buyer.telegram_id,
+            text=message_text,
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        print(f"Failed to notify pickup completion buyer {buyer.telegram_id}: {e}")
 
 
 async def update_agent_job_message(message_id: int, delivery_id: int, stage: str, agent_telegram_id: str):

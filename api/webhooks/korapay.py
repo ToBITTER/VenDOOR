@@ -65,6 +65,7 @@ async def _ensure_delivery_order_link(
     session: AsyncSession,
     delivery_id: int,
     order_id: int,
+    sequence: int = 1,
 ) -> None:
     existing = await session.execute(
         select(DeliveryOrder).where(
@@ -79,7 +80,7 @@ async def _ensure_delivery_order_link(
         DeliveryOrder(
             delivery_id=delivery_id,
             order_id=order_id,
-            sequence=1,
+            sequence=sequence,
         )
     )
 
@@ -424,25 +425,32 @@ async def _handle_cart_payment_success(
         listing.quantity -= required_qty
         listing.available = listing.quantity > 0
 
-    for order in pending_orders:
+    shared_delivery: Delivery | None = None
+    for idx, order in enumerate(pending_orders, start=1):
         order.status = OrderStatus.PAID
         order.paid_at = now
         if order.transaction_ref is None:
             synthesized_ref = f"{reference}_{order.id}"
             order.transaction_ref = synthesized_ref[:255]
-        if not order.delivery:
-            delivery = Delivery(order_id=order.id, status=DeliveryStatus.PENDING_ASSIGNMENT)
-            session.add(delivery)
-            await session.flush()
-            await _ensure_delivery_order_link(session, delivery.id, order.id)
-            session.add(
-                DeliveryEvent(
-                    delivery_id=delivery.id,
-                    event_type=DeliveryEventType.ASSIGNED,
-                    actor="SYSTEM",
-                    note="Cart payment confirmed; ready for delivery assignment",
+
+        # Create one shared delivery job for all cart orders.
+        if shared_delivery is None:
+            if order.delivery:
+                shared_delivery = order.delivery
+            else:
+                shared_delivery = Delivery(order_id=order.id, status=DeliveryStatus.PENDING_ASSIGNMENT)
+                session.add(shared_delivery)
+                await session.flush()
+                session.add(
+                    DeliveryEvent(
+                        delivery_id=shared_delivery.id,
+                        event_type=DeliveryEventType.ASSIGNED,
+                        actor="SYSTEM",
+                        note="Cart payment confirmed; grouped delivery ready for assignment",
+                    )
                 )
-            )
+
+        await _ensure_delivery_order_link(session, shared_delivery.id, order.id, sequence=idx)
 
     await session.commit()
 

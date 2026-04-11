@@ -58,37 +58,6 @@ async def start_seller_registration(callback: CallbackQuery, state: FSMContext, 
 
     text = (
         "<b>Seller Registration</b>\n\n"
-        "Send your full name as it appears on your ID card."
-    )
-    await safe_replace_with_screen(callback, text, parse_mode="HTML")
-    await state.set_state(SellerRegistrationStates.awaiting_full_name)
-
-
-@router.message(SellerRegistrationStates.awaiting_full_name)
-async def handle_full_name(message: Message, state: FSMContext):
-    full_name = (message.text or "").strip()
-    if len(full_name.split()) < 2:
-        await message.reply("Please enter your full name (first and last name).")
-        return
-    await state.update_data(full_name=full_name)
-    await message.answer(
-        "<b>Level</b>\n\nSend your level (e.g. 100L, 200L, 300L).\n"
-        "If not a student, send <code>N/A</code>.",
-        parse_mode="HTML",
-    )
-    await state.set_state(SellerRegistrationStates.awaiting_level)
-
-
-@router.message(SellerRegistrationStates.awaiting_level)
-async def handle_level(message: Message, state: FSMContext):
-    level = (message.text or "").strip().upper()
-    if not level:
-        await message.reply("Please enter your level or N/A.")
-        return
-    await state.update_data(level=level)
-
-    text = (
-        "<b>Seller Registration</b>\n\n"
         "Are you a university student?\n\n"
         "Student sellers get priority visibility and lower fees."
     )
@@ -99,8 +68,50 @@ async def handle_level(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="Cancel", callback_data="back_to_menu")],
         ]
     )
-    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+    await safe_replace_with_screen(callback, text, parse_mode="HTML", reply_markup=keyboard)
     await state.set_state(SellerRegistrationStates.awaiting_student_choice)
+
+
+@router.message(SellerRegistrationStates.awaiting_full_name)
+async def handle_full_name(message: Message, state: FSMContext):
+    full_name = (message.text or "").strip()
+    if len(full_name.split()) < 2:
+        await message.reply("Please enter your full name (first and last name).")
+        return
+    data = await state.get_data()
+    await state.update_data(full_name=full_name)
+    if data.get("is_student"):
+        await message.answer(
+            "<b>Level</b>\n\nSend your level (e.g. 100L, 200L, 300L).",
+            parse_mode="HTML",
+        )
+        await state.set_state(SellerRegistrationStates.awaiting_level)
+        return
+
+    await state.update_data(level="N/A")
+    await message.answer(
+        "<b>ID Document</b>\n\n"
+        "Please send a photo of your ID document\n"
+        "(National ID, Passport, Driver's License, etc.)",
+        parse_mode="HTML",
+    )
+    await state.set_state(SellerRegistrationStates.awaiting_id_document)
+
+
+@router.message(SellerRegistrationStates.awaiting_level)
+async def handle_level(message: Message, state: FSMContext):
+    level = (message.text or "").strip().upper()
+    if not level:
+        await message.reply("Please enter your level.")
+        return
+    await state.update_data(level=level)
+    await message.answer(
+        "<b>Student Email</b>\n\n"
+        "Please enter your university email address.\n"
+        "Example: example@stu.cu.edu.ng",
+        parse_mode="HTML",
+    )
+    await state.set_state(SellerRegistrationStates.awaiting_student_email)
 
 
 @router.callback_query(F.data == "seller_student_yes", StateFilter(SellerRegistrationStates.awaiting_student_choice))
@@ -110,27 +121,25 @@ async def handle_student_yes(callback: CallbackQuery, state: FSMContext):
 
     await safe_replace_with_screen(
         callback,
-        "<b>Student Email</b>\n\n"
-        "Please enter your university email address.\n"
-        "Example: example@stu.cu.edu.ng",
+        "<b>Seller Registration</b>\n\n"
+        "Send your full name as it appears on your ID card.",
         parse_mode="HTML",
     )
-    await state.set_state(SellerRegistrationStates.awaiting_student_email)
+    await state.set_state(SellerRegistrationStates.awaiting_full_name)
 
 
 @router.callback_query(F.data == "seller_student_no", StateFilter(SellerRegistrationStates.awaiting_student_choice))
 async def handle_student_no(callback: CallbackQuery, state: FSMContext):
     await safe_answer_callback(callback)
-    await state.update_data(is_student=False)
+    await state.update_data(is_student=False, student_email=None, hall=None, room_number=None, level="N/A")
 
     await safe_replace_with_screen(
         callback,
-        "<b>ID Document</b>\n\n"
-        "Please send a photo of your ID document\n"
-        "(National ID, Passport, Driver's License, etc.)",
+        "<b>Seller Registration</b>\n\n"
+        "Send your full name as it appears on your ID card.",
         parse_mode="HTML",
     )
-    await state.set_state(SellerRegistrationStates.awaiting_id_document)
+    await state.set_state(SellerRegistrationStates.awaiting_full_name)
 
 
 @router.message(SellerRegistrationStates.awaiting_student_email)

@@ -50,13 +50,26 @@ async def update_delivery_status(
         delivery.in_transit_at = datetime.now(timezone.utc)
     elif new_status == DeliveryStatus.DELIVERED:
         delivery.delivered_at = datetime.now(timezone.utc)
-        order = await session.get(Order, delivery.order_id)
-        if order:
-            deadline = datetime.now(timezone.utc) + timedelta(hours=settings.escrow_release_hours)
-            order.delivered_at = datetime.now(timezone.utc)
-            order.delivery_confirm_deadline_at = deadline
-            order.auto_release_scheduled_at = deadline
-            session.add(order)
+        delivered_at = datetime.now(timezone.utc)
+        deadline = delivered_at + timedelta(hours=settings.escrow_release_hours)
+
+        # Update every order linked to this delivery job so shared cart deliveries
+        # can be confirmed/released consistently.
+        linked_rows = await session.execute(
+            select(DeliveryOrder).where(DeliveryOrder.delivery_id == delivery_id)
+        )
+        linked = linked_rows.scalars().all()
+        order_ids = {row.order_id for row in linked if row.order_id}
+        if not order_ids and delivery.order_id:
+            order_ids = {delivery.order_id}
+
+        if order_ids:
+            orders_result = await session.execute(select(Order).where(Order.id.in_(order_ids)))
+            for order in orders_result.scalars().all():
+                order.delivered_at = delivered_at
+                order.delivery_confirm_deadline_at = deadline
+                order.auto_release_scheduled_at = deadline
+                session.add(order)
 
     # Update location if provided
     if latitude is not None and longitude is not None:
