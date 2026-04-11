@@ -97,13 +97,32 @@ async def safe_replace_with_screen(
     if not callback.message:
         return
 
+    deleted = False
     try:
         await callback.message.delete()
+        deleted = True
     except Exception:
-        pass
+        # When Telegram refuses deletion (age/permissions), fall back to editing
+        # the existing message to avoid stacking duplicate menu screens.
+        deleted = False
+
+    if deleted:
+        if photo:
+            await callback.message.answer_photo(photo=photo, caption=text, **kwargs)
+            return
+
+        await callback.message.answer(text, **kwargs)
+        return
 
     if photo:
+        if callback.message.photo:
+            try:
+                await callback.message.edit_caption(caption=text, **kwargs)
+                return
+            except TelegramBadRequest as exc:
+                if _is_not_modified_error(exc):
+                    return
         await callback.message.answer_photo(photo=photo, caption=text, **kwargs)
         return
 
-    await callback.message.answer(text, **kwargs)
+    await safe_edit_text(callback, text, **kwargs)
