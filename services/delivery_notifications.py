@@ -273,6 +273,77 @@ async def notify_buyer_all_pickups_completed(
         print(f"Failed to notify pickup completion buyer {buyer.telegram_id}: {e}")
 
 
+async def notify_buyer_group_delivery_status_update(
+    delivery_id: int,
+    status: str,
+    agent: DeliveryAgent | None,
+    session: AsyncSession,
+):
+    """
+    Send one grouped status update per delivery (instead of one per item/order).
+    """
+    if not bot_instance:
+        return
+
+    result = await session.execute(
+        select(DeliveryOrder)
+        .options(joinedload(DeliveryOrder.order).joinedload(Order.buyer), joinedload(DeliveryOrder.order).joinedload(Order.listing))
+        .where(DeliveryOrder.delivery_id == delivery_id)
+        .order_by(DeliveryOrder.sequence.asc())
+    )
+    delivery_orders = [item for item in result.scalars().all() if item.order and item.order.buyer]
+    if not delivery_orders:
+        return
+
+    buyer = delivery_orders[0].order.buyer
+    if not buyer or not buyer.telegram_id:
+        return
+
+    order_ids = [item.order.id for item in delivery_orders]
+    order_ids_text = ", ".join(f"#{order_id}" for order_id in order_ids)
+    total_items = sum(item.order.quantity for item in delivery_orders if item.order)
+
+    if status == DeliveryStatus.IN_TRANSIT.value:
+        message_text = (
+            "<b>Delivery In Transit</b>\n\n"
+            f"Combined order: {order_ids_text}\n"
+            f"Items on the way: {total_items}\n"
+        )
+        if agent:
+            message_text += f"Driver: {agent.name}"
+            if agent.phone:
+                message_text += f" | {agent.phone}"
+        reply_markup = None
+    elif status == DeliveryStatus.DELIVERED.value:
+        message_text = (
+            "<b>Delivery Completed</b>\n\n"
+            f"Combined order: {order_ids_text}\n"
+            f"Delivered items: {total_items}\n\n"
+            "Confirm receipt for each item below."
+        )
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        rows = [
+            [InlineKeyboardButton(text=f"Confirm Order #{item.order.id}", callback_data=f"order_confirm_item_{item.order.id}")]
+            for item in delivery_orders
+            if item.order
+        ]
+        rows.append([InlineKeyboardButton(text="View My Orders", callback_data="my_orders")])
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=rows)
+    else:
+        return
+
+    try:
+        await bot_instance.send_message(
+            chat_id=buyer.telegram_id,
+            text=message_text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+    except Exception as e:
+        print(f"Failed to notify grouped delivery status buyer {buyer.telegram_id}: {e}")
+
+
 async def update_agent_job_message(message_id: int, delivery_id: int, stage: str, agent_telegram_id: str):
     """
     Edit agent's original job message to show current pickup progress.

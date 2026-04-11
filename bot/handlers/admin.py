@@ -1563,10 +1563,14 @@ async def admin_delivery_set_agent(callback: CallbackQuery, session: AsyncSessio
 
     result = await session.execute(
         select(Delivery)
-        .options(joinedload(Delivery.order).joinedload(Order.buyer))
+        .options(
+            joinedload(Delivery.order).joinedload(Order.buyer),
+            joinedload(Delivery.delivery_orders).joinedload(DeliveryOrder.order).joinedload(Order.buyer),
+            joinedload(Delivery.delivery_orders).joinedload(DeliveryOrder.order).joinedload(Order.listing),
+        )
         .where(Delivery.id == delivery_id)
     )
-    delivery = result.scalars().first()
+    delivery = result.unique().scalars().first()
     if not delivery:
         await safe_edit_text(callback, "Delivery not found.", reply_markup=_admin_tools_keyboard())
         return
@@ -1576,29 +1580,52 @@ async def admin_delivery_set_agent(callback: CallbackQuery, session: AsyncSessio
         await safe_edit_text(callback, "Agent not available.", reply_markup=_admin_tools_keyboard())
         return
 
+    # Idempotency guard: avoid duplicate notifications when assignment is repeated.
+    if delivery.agent_id == agent.id and delivery.status == DeliveryStatus.ASSIGNED:
+        await safe_edit_text(
+            callback,
+            (
+                "<b>Already Assigned</b>\n\n"
+                f"Delivery #{delivery.id} is already assigned to {agent.name} (#{agent.id})."
+            ),
+            parse_mode="HTML",
+            reply_markup=_admin_tools_keyboard(),
+        )
+        return
+
     delivery.agent_id = agent.id
     delivery.status = DeliveryStatus.ASSIGNED
     if delivery.order_id:
         await _ensure_delivery_order_link(session, delivery.id, delivery.order_id)
     await session.commit()
 
-    if delivery.order and delivery.order.buyer and delivery.order.buyer.telegram_id:
+    linked_orders: list[Order] = []
+    for delivery_order in sorted(delivery.delivery_orders or [], key=lambda item: (item.sequence, item.id)):
+        if delivery_order.order:
+            linked_orders.append(delivery_order.order)
+    if not linked_orders and delivery.order:
+        linked_orders = [delivery.order]
+
+    buyer = linked_orders[0].buyer if linked_orders else None
+    if buyer and buyer.telegram_id:
         try:
+            first_order_id = linked_orders[0].id
+            order_ids_text = ", ".join(f"#{order.id}" for order in linked_orders)
             track_keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
                             text="Track Delivery",
-                            callback_data=f"order_track_{delivery.order_id}",
+                            callback_data=f"order_track_{first_order_id}",
                         )
                     ]
                 ]
             )
             await callback.bot.send_message(
-                chat_id=int(delivery.order.buyer.telegram_id),
+                chat_id=int(buyer.telegram_id),
                 text=(
-                    "Your order has been assigned to an agent.\n\n"
-                    f"Order: #{delivery.order_id}\n"
+                    "Your delivery has been assigned to an agent.\n\n"
+                    f"Order(s): {order_ids_text}\n"
                     f"Agent: {agent.name}\n"
                     f"Phone: {agent.phone or 'N/A'}\n\n"
                     "Tap Track Delivery for live status."

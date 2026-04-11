@@ -32,8 +32,16 @@ async def _effective_delivery(order: Order, session: AsyncSession) -> Delivery |
     Resolve shared delivery job for an order.
     Falls back to DeliveryOrder link for grouped cart deliveries.
     """
-    if order.delivery:
-        return order.delivery
+    # Avoid relationship lazy-loading in async handlers (can trigger MissingGreenlet).
+    direct_result = await session.execute(
+        select(Delivery)
+        .options(selectinload(Delivery.agent))
+        .where(Delivery.order_id == order.id)
+        .limit(1)
+    )
+    direct_delivery = direct_result.scalars().first()
+    if direct_delivery:
+        return direct_delivery
 
     result = await session.execute(
         select(Delivery)
