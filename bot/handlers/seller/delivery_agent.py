@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from db.models import Delivery, DeliveryAgent, DeliveryOrder, DeliveryStatus, Order, SellerProfile
+from db.models import AdminUser, Delivery, DeliveryAgent, DeliveryOrder, DeliveryStatus, Order, SellerProfile
 from core.config import get_settings
 from services.delivery_notifications import (
     notify_buyer_all_pickups_completed,
@@ -46,6 +46,48 @@ def _parse_callback_id(callback_data: str | None, prefix: str) -> int | None:
 
 def _full_name(first_name: str | None, last_name: str | None) -> str:
     return f"{first_name or ''} {last_name or ''}".strip() or "Unknown"
+
+
+async def _notify_admins_new_agent_application(
+    message: Message, agent: DeliveryAgent, session: AsyncSession
+) -> None:
+    """
+    Notify super admin and ops admins when a new delivery agent profile is submitted.
+    """
+    recipient_ids: set[int] = set()
+
+    if settings.admin_telegram_id and str(settings.admin_telegram_id).isdigit():
+        recipient_ids.add(int(settings.admin_telegram_id))
+
+    result = await session.execute(select(AdminUser.telegram_id))
+    for telegram_id in result.scalars().all():
+        if telegram_id and str(telegram_id).isdigit():
+            recipient_ids.add(int(telegram_id))
+
+    if not recipient_ids:
+        return
+
+    status_text = "ACTIVE" if agent.is_active else "PENDING_ACTIVATION"
+    applicant_username = (
+        f"@{message.from_user.username}" if message.from_user and message.from_user.username else "N/A"
+    )
+    notification_text = (
+        "<b>New Delivery Agent Application</b>\n\n"
+        f"<b>Agent ID:</b> {agent.id}\n"
+        f"<b>Name:</b> {agent.name}\n"
+        f"<b>Phone:</b> {agent.phone or 'N/A'}\n"
+        f"<b>Vehicle:</b> {agent.vehicle_type or 'N/A'}\n"
+        f"<b>Telegram ID:</b> <code>{agent.telegram_id}</code>\n"
+        f"<b>Username:</b> {applicant_username}\n"
+        f"<b>Status:</b> {status_text}\n\n"
+        "Open Admin Tools > Delivery Agents to review."
+    )
+
+    for chat_id in recipient_ids:
+        try:
+            await message.bot.send_message(chat_id=chat_id, text=notification_text, parse_mode="HTML")
+        except Exception:
+            pass
 
 
 async def safe_answer_callback(callback: CallbackQuery, text: str = "", show_alert: bool = False):
@@ -305,6 +347,7 @@ async def delivery_agent_signup_vehicle(message: Message, state: FSMContext, ses
         parse_mode="HTML",
         reply_markup=_delivery_hub_keyboard(is_agent=True),
     )
+    await _notify_admins_new_agent_application(message, agent, session)
 
 
 @router.callback_query(F.data.startswith("delivery_open_"))

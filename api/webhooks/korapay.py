@@ -8,12 +8,14 @@ import hashlib
 import json
 import logging
 from aiogram import Bot
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from db.models import (
+    AdminUser,
     Delivery,
     DeliveryEvent,
     DeliveryEventType,
@@ -30,6 +32,53 @@ from core.config import get_settings
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+
+async def _notify_admins_new_paid_order(
+    session: AsyncSession,
+    bot: Bot | None,
+    order: Order,
+    delivery_id: int | None,
+) -> None:
+    if not bot:
+        return
+
+    recipients: set[int] = set()
+    if settings.admin_telegram_id and str(settings.admin_telegram_id).isdigit():
+        recipients.add(int(settings.admin_telegram_id))
+
+    admins_result = await session.execute(select(AdminUser.telegram_id))
+    for telegram_id in admins_result.scalars().all():
+        if telegram_id and str(telegram_id).isdigit():
+            recipients.add(int(telegram_id))
+
+    if not recipients:
+        return
+
+    item_title = order.listing.title if order.listing else "Unknown item"
+    text = (
+        "<b>New Paid Order</b>\n\n"
+        f"<b>Order ID:</b> #{order.id}\n"
+        f"<b>Item:</b> {order.quantity} x {item_title}\n"
+        f"<b>Amount:</b> NGN {order.amount:,.2f}\n"
+        f"<b>Delivery To:</b> {order.buyer_address or 'N/A'}\n"
+    )
+    if delivery_id is not None:
+        text += f"<b>Delivery ID:</b> #{delivery_id}\n"
+
+    keyboard = None
+    if delivery_id is not None:
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=f"Assign Order #{order.id}", callback_data=f"admin_delivery_assign_{delivery_id}")]
+            ]
+        )
+
+    for chat_id in recipients:
+        try:
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard)
+        except Exception:
+            logger.exception("Failed admin new-order alert order_id=%s chat_id=%s", order.id, chat_id)
 
 
 async def _create_webhook_receipt(
@@ -230,6 +279,7 @@ async def _handle_payment_success(
                 # Keep row-lock query free of JOIN eager-loads (Postgres FOR UPDATE + outer joins can fail).
                 selectinload(Order.buyer),
                 selectinload(Order.seller).selectinload(SellerProfile.user),
+                selectinload(Order.listing),
                 selectinload(Order.delivery),
             )
             .where(Order.transaction_ref == reference)
@@ -292,6 +342,8 @@ async def _handle_payment_success(
         
         await session.commit()
 
+        delivery_id = order.delivery.id if order.delivery else None
+
         buyer_telegram_id = order.buyer.telegram_id if order.buyer else None
         seller_telegram_id = order.seller.user.telegram_id if order.seller and order.seller.user else None
         seller_username = order.seller.user.username if order.seller and order.seller.user else None
@@ -315,16 +367,27 @@ async def _handle_payment_success(
         if bot and seller_telegram_id:
             buyer_contact = f"@{buyer_username}" if buyer_username else "Buyer handle not set"
             try:
+                seller_keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text=f"View Order #{order.id}", callback_data=f"seller_view_order_{order.id}")],
+                        [InlineKeyboardButton(text="My Listings", callback_data="seller_listings")],
+                    ]
+                )
                 await bot.send_message(
                     chat_id=int(seller_telegram_id),
                     text=(
                         f"You have a new paid order #{order.id}.\n\n"
                         f"Buyer contact: {buyer_contact}\n"
-                        f"Please prepare {order.quantity} unit(s) for delivery."
+                        f"Item: {order.quantity} x {order.listing.title if order.listing else 'Unknown item'}\n"
+                        f"Delivery To: {order.buyer_address or 'N/A'}\n\n"
+                        f"Please prepare {order.quantity} unit(s) now."
                     ),
+                    reply_markup=seller_keyboard,
                 )
             except Exception:
                 logger.exception("Failed to notify seller for paid order %s", order.id)
+
+        await _notify_admins_new_paid_order(session, bot, order, delivery_id)
         
         # Queue Celery task for auto-release
         # from tasks.escrow_release import release_escrow_auto
@@ -454,6 +517,8 @@ async def _handle_cart_payment_success(
 
     await session.commit()
 
+    shared_delivery_id = shared_delivery.id if shared_delivery else None
+
     buyer = next((order.buyer for order in orders if order.buyer), None)
     if bot and buyer and buyer.telegram_id:
         try:
@@ -472,15 +537,25 @@ async def _handle_cart_payment_success(
         seller_user = order.seller.user if order.seller else None
         if bot and seller_user and seller_user.telegram_id:
             try:
+                seller_keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text=f"View Order #{order.id}", callback_data=f"seller_view_order_{order.id}")],
+                        [InlineKeyboardButton(text="My Listings", callback_data="seller_listings")],
+                    ]
+                )
                 await bot.send_message(
                     chat_id=int(seller_user.telegram_id),
                     text=(
                         f"You have a new paid order #{order.id}.\n"
+                        f"Item: {order.quantity} x {order.listing.title if order.listing else 'Unknown item'}\n"
+                        f"Delivery To: {order.buyer_address or 'N/A'}\n\n"
                         f"Please prepare {order.quantity} unit(s) for delivery."
                     ),
+                    reply_markup=seller_keyboard,
                 )
             except Exception:
                 logger.exception("Failed to notify seller for cart-paid order %s", order.id)
+        await _notify_admins_new_paid_order(session, bot, order, shared_delivery_id)
 
     return {
         "status": "success",

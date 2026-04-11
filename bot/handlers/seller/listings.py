@@ -11,10 +11,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline, get_seller_actions
-from db.models import AccessorySubcategory, Category, Listing, SellerProfile, User
+from db.models import AccessorySubcategory, Category, Listing, Order, SellerProfile, User
 
 router = Router()
 
@@ -358,3 +359,64 @@ async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, s
         await safe_replace_with_screen(callback, f"Error: {e}", reply_markup=get_seller_actions())
 
     await state.clear()
+
+
+@router.callback_query(F.data.startswith("seller_view_order_"))
+async def seller_view_order(callback: CallbackQuery, session: AsyncSession):
+    await safe_answer_callback(callback)
+    if not callback.from_user:
+        await safe_replace_with_screen(callback, "Unable to identify your account.", reply_markup=get_seller_actions())
+        return
+
+    payload = (callback.data or "").replace("seller_view_order_", "", 1).strip()
+    if not payload.isdigit():
+        await safe_replace_with_screen(callback, "Invalid order ID.", reply_markup=get_seller_actions())
+        return
+    order_id = int(payload)
+
+    user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
+    user = user_result.scalars().first()
+    if not user:
+        await safe_replace_with_screen(callback, "User not found.", reply_markup=get_main_menu_inline())
+        return
+
+    seller_result = await session.execute(select(SellerProfile).where(SellerProfile.user_id == user.id))
+    seller = seller_result.scalars().first()
+    if not seller:
+        await safe_replace_with_screen(callback, "You are not registered as a seller.", reply_markup=get_main_menu_inline())
+        return
+
+    order_result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.listing), selectinload(Order.buyer))
+        .where(Order.id == order_id)
+    )
+    order = order_result.scalars().first()
+    if not order or order.seller_id != seller.id:
+        await safe_replace_with_screen(callback, "Order not found for your seller account.", reply_markup=get_seller_actions())
+        return
+
+    buyer_name = (
+        f"{order.buyer.first_name} {order.buyer.last_name or ''}".strip()
+        if order.buyer
+        else "Unknown"
+    )
+    text = (
+        f"<b>Seller Order View</b>\n\n"
+        f"<b>Order ID:</b> #{order.id}\n"
+        f"<b>Item:</b> {order.listing.title if order.listing else 'Unknown item'}\n"
+        f"<b>Quantity:</b> {order.quantity} unit(s)\n"
+        f"<b>Status:</b> {order.status.value}\n"
+        f"<b>Amount:</b> NGN {order.amount:,.2f}\n"
+        f"<b>Buyer:</b> {buyer_name}\n"
+        f"<b>Delivery To:</b> {order.buyer_address or 'N/A'}\n"
+    )
+    if order.buyer_delivery_details:
+        text += f"<b>Buyer Note:</b> {order.buyer_delivery_details}\n"
+
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=get_seller_actions(),
+    )
