@@ -44,19 +44,6 @@ class ListingStates(StatesGroup):
     confirming_listing = State()
 
 
-QUANTITY_ENABLED_CATEGORIES = {
-    Category.CLOTHES,
-    Category.JEWELRY,
-    Category.SKINCARE,
-    Category.BOOKS,
-    Category.SHOES,
-}
-
-
-def category_uses_quantity(category: Category) -> bool:
-    return category in QUANTITY_ENABLED_CATEGORIES
-
-
 @router.callback_query(F.data == "seller_listings")
 async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
@@ -230,22 +217,12 @@ async def handle_listing_category(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(category=category, accessory_subcategory=None)
-    if category_uses_quantity(category):
-        await safe_replace_with_screen(
-            callback,
-            "<b>Item Quantity</b>\n\nHow many units are available? (1-500)",
-            parse_mode="HTML",
-        )
-        await state.set_state(ListingStates.awaiting_quantity)
-        return
-
-    await state.update_data(quantity=1)
     await safe_replace_with_screen(
         callback,
-        "<b>Base Price (NGN)</b>\n\nEnter base price. Buyer pays 5% platform fee.",
+        "<b>Item Quantity</b>\n\nHow many units are available? (1-500)",
         parse_mode="HTML",
     )
-    await state.set_state(ListingStates.awaiting_base_price)
+    await state.set_state(ListingStates.awaiting_quantity)
 
 
 @router.callback_query(F.data.startswith("acc_"), StateFilter(ListingStates.awaiting_accessory_subcategory))
