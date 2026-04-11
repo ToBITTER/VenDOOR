@@ -81,16 +81,11 @@ def _group_confirm_keyboard(orders: list[Order]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _confirm_single_order_receipt(callback: CallbackQuery, session: AsyncSession, order: Order) -> None:
+async def _release_order_and_notify(callback: CallbackQuery, session: AsyncSession, order: Order) -> bool:
     escrow_service = get_escrow_service()
     released = await escrow_service.release_escrow(order.id, session)
     if not released:
-        await safe_replace_with_screen(
-            callback,
-            "Could not release seller payment right now. Please try again.",
-            reply_markup=get_main_menu_inline(),
-        )
-        return
+        return False
 
     order.auto_release_scheduled_at = None
     await session.commit()
@@ -107,6 +102,19 @@ async def _confirm_single_order_receipt(callback: CallbackQuery, session: AsyncS
             )
         except Exception:
             pass
+
+    return True
+
+
+async def _confirm_single_order_receipt(callback: CallbackQuery, session: AsyncSession, order: Order) -> None:
+    released = await _release_order_and_notify(callback, session, order)
+    if not released:
+        await safe_replace_with_screen(
+            callback,
+            "Could not release seller payment right now. Please try again.",
+            reply_markup=get_main_menu_inline(),
+        )
+        return
 
     await safe_replace_with_screen(
         callback,
@@ -344,7 +352,37 @@ async def confirm_receipt_group_item(callback: CallbackQuery, session: AsyncSess
 
     await safe_answer_callback(callback)
     try:
-        await _confirm_single_order_receipt(callback, session, order)
+        released = await _release_order_and_notify(callback, session, order)
+        if not released:
+            await safe_replace_with_screen(
+                callback,
+                "Could not release seller payment right now. Please try again.",
+                reply_markup=get_main_menu_inline(),
+            )
+            return
+
+        remaining = await _group_confirmable_orders(order, user.id, session)
+        if len(remaining) > 1 or (len(remaining) == 1 and remaining[0].id != order.id):
+            text = [f"<b>Receipt Confirmed for Order #{order.id}</b>", ""]
+            text.append("Confirm remaining delivered items below:")
+            text.append("")
+            for grouped_order in remaining:
+                item_title = grouped_order.listing.title if grouped_order.listing else "Item"
+                text.append(f"Order #{grouped_order.id}: {grouped_order.quantity} x {item_title}")
+            await safe_replace_with_screen(
+                callback,
+                "\n".join(text),
+                parse_mode="HTML",
+                reply_markup=_group_confirm_keyboard(remaining),
+            )
+            return
+
+        await safe_replace_with_screen(
+            callback,
+            "<b>All Delivered Items Confirmed</b>\n\nThank you for shopping with VenDOOR.",
+            parse_mode="HTML",
+            reply_markup=get_main_menu_inline(),
+        )
     except Exception:
         await session.rollback()
         await safe_replace_with_screen(callback, "Could not confirm receipt right now. Please try again.")
