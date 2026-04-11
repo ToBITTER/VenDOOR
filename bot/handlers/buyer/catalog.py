@@ -261,6 +261,17 @@ async def browse_catalog(callback: CallbackQuery):
     await safe_render_text_screen(callback, text, reply_markup=get_catalog_categories())
 
 
+@router.callback_query(F.data == "catalog_back")
+async def catalog_back(callback: CallbackQuery):
+    await safe_answer_callback(callback)
+    if not callback.message:
+        return
+    try:
+        await callback.message.delete()
+    except Exception:
+        await safe_edit_text(callback, "Browse catalog closed.")
+
+
 @router.callback_query(F.data == "catalog_search_start")
 async def catalog_search_start(callback: CallbackQuery, state: FSMContext):
     await safe_answer_callback(callback)
