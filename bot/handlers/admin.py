@@ -15,7 +15,7 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -25,8 +25,11 @@ from core.config import get_settings
 from db.models import (
     AdminRole,
     AdminUser,
+    CartItem,
+    Complaint,
     Delivery,
     DeliveryAgent,
+    DeliveryEvent,
     DeliveryOrder,
     DeliveryStatus,
     Listing,
@@ -34,6 +37,7 @@ from db.models import (
     OrderStatus,
     SellerProfile,
     User,
+    WebhookReceipt,
 )
 
 router = Router()
@@ -158,6 +162,7 @@ def _danger_tools_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Delete Listing", callback_data="admin_delete_help_listing")],
             [InlineKeyboardButton(text="Delete Vendor", callback_data="admin_delete_help_vendor")],
             [InlineKeyboardButton(text="Delete User", callback_data="admin_delete_help_user")],
+            [InlineKeyboardButton(text="Clear Transactions + Listings", callback_data="admin_wipe_marketplace_confirm")],
             [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
             [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
         ]
@@ -178,6 +183,45 @@ def _delete_picker_keyboard(items: list[tuple[str, str]]) -> InlineKeyboardMarku
     rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
     rows.append([InlineKeyboardButton(text="Back", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _wipe_marketplace_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Yes, clear now", callback_data="admin_wipe_marketplace_execute")],
+            [InlineKeyboardButton(text="Cancel", callback_data="admin_danger_tools")],
+        ]
+    )
+
+
+def _wipe_marketplace_done_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Danger Zone", callback_data="admin_danger_tools")],
+        ]
+    )
+
+
+async def _wipe_transactions_and_listings(session: AsyncSession) -> dict[str, int]:
+    """
+    Delete all transaction/listing data while preserving users/admin/agents/seller profiles.
+    """
+    counts: dict[str, int] = {}
+    delete_plan: list[tuple[str, object]] = [
+        ("delivery_events", DeliveryEvent),
+        ("delivery_orders", DeliveryOrder),
+        ("deliveries", Delivery),
+        ("complaints", Complaint),
+        ("orders", Order),
+        ("cart_items", CartItem),
+        ("listings", Listing),
+        ("webhook_receipts", WebhookReceipt),
+    ]
+    for label, model in delete_plan:
+        result = await session.execute(delete(model))
+        counts[label] = int(result.rowcount or 0)
+    return counts
 
 
 async def _find_seller_by_identifier(
@@ -1032,6 +1076,65 @@ async def admin_danger_tools(callback: CallbackQuery, session: AsyncSession):
         ),
         parse_mode="HTML",
         reply_markup=_danger_tools_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_wipe_marketplace_confirm")
+async def admin_wipe_marketplace_confirm(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        (
+            "<b>Confirm Data Wipe</b>\n\n"
+            "This will permanently clear:\n"
+            "- Listings\n"
+            "- Cart items\n"
+            "- Orders and complaints\n"
+            "- Deliveries, pickup records, and delivery events\n"
+            "- Webhook receipts\n\n"
+            "This cannot be undone."
+        ),
+        parse_mode="HTML",
+        reply_markup=_wipe_marketplace_confirm_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_wipe_marketplace_execute")
+async def admin_wipe_marketplace_execute(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    try:
+        counts = await _wipe_transactions_and_listings(session)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        await safe_replace_with_screen(
+            callback,
+            "Could not clear data right now. Please retry.",
+            reply_markup=_wipe_marketplace_done_keyboard(),
+        )
+        return
+
+    await safe_replace_with_screen(
+        callback,
+        (
+            "<b>Data Cleared</b>\n\n"
+            f"Listings: {counts.get('listings', 0)}\n"
+            f"Cart Items: {counts.get('cart_items', 0)}\n"
+            f"Orders: {counts.get('orders', 0)}\n"
+            f"Complaints: {counts.get('complaints', 0)}\n"
+            f"Deliveries: {counts.get('deliveries', 0)}\n"
+            f"Delivery Orders: {counts.get('delivery_orders', 0)}\n"
+            f"Delivery Events: {counts.get('delivery_events', 0)}\n"
+            f"Webhook Receipts: {counts.get('webhook_receipts', 0)}"
+        ),
+        parse_mode="HTML",
+        reply_markup=_wipe_marketplace_done_keyboard(),
     )
 
 
