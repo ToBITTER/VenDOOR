@@ -5,7 +5,7 @@ Displays welcome message and main menu.
 
 from aiogram import F, Router
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,6 +68,9 @@ async def start_handler(message: Message, session: AsyncSession):
         )
         session.add(user)
         await session.commit()
+
+    # Force-clear legacy reply keyboards from older bot versions.
+    await message.answer("Main menu refreshed.", reply_markup=ReplyKeyboardRemove())
 
     welcome_banner = get_welcome_banner()
     if welcome_banner:
