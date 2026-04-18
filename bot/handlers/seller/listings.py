@@ -9,13 +9,13 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
 from bot.keyboards.main_menu import get_main_menu_inline, get_seller_actions
-from db.models import AccessorySubcategory, Category, Listing, Order, SellerProfile, User
+from db.models import AccessorySubcategory, Category, Listing, Order, OrderStatus, SellerProfile, User
 
 router = Router()
 
@@ -42,6 +42,100 @@ class ListingStates(StatesGroup):
     awaiting_quantity = State()
     awaiting_base_price = State()
     confirming_listing = State()
+
+
+@router.callback_query(F.data == "seller_stats")
+async def seller_stats(callback: CallbackQuery, session: AsyncSession):
+    await safe_answer_callback(callback)
+    user_id_str = str(callback.from_user.id)
+    user_result = await session.execute(select(User).where(User.telegram_id == user_id_str))
+    user = user_result.scalars().first()
+    if not user:
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
+        return
+
+    seller_result = await session.execute(select(SellerProfile).where(SellerProfile.user_id == user.id))
+    seller = seller_result.scalars().first()
+    if not seller:
+        await safe_replace_with_screen(
+            callback,
+            "You are not registered as a seller.\n\nRegister now to start selling.",
+            reply_markup=get_main_menu_inline(),
+        )
+        return
+
+    total_listings_sq = (
+        select(func.count(Listing.id))
+        .where(Listing.seller_id == seller.id)
+        .scalar_subquery()
+    )
+    active_listings_sq = (
+        select(func.count(Listing.id))
+        .where(Listing.seller_id == seller.id, Listing.available.is_(True))
+        .scalar_subquery()
+    )
+    total_orders_sq = (
+        select(func.count(Order.id))
+        .where(Order.seller_id == seller.id)
+        .scalar_subquery()
+    )
+    paid_orders_sq = (
+        select(func.count(Order.id))
+        .where(Order.seller_id == seller.id, Order.status == OrderStatus.PAID)
+        .scalar_subquery()
+    )
+    completed_orders_sq = (
+        select(func.count(Order.id))
+        .where(Order.seller_id == seller.id, Order.status == OrderStatus.COMPLETED)
+        .scalar_subquery()
+    )
+    disputed_orders_sq = (
+        select(func.count(Order.id))
+        .where(Order.seller_id == seller.id, Order.status == OrderStatus.DISPUTED)
+        .scalar_subquery()
+    )
+    gross_sales_sq = (
+        select(func.coalesce(func.sum(Order.amount), 0))
+        .where(Order.seller_id == seller.id, Order.status.in_([OrderStatus.PAID, OrderStatus.COMPLETED]))
+        .scalar_subquery()
+    )
+    completed_sales_sq = (
+        select(func.coalesce(func.sum(Order.amount), 0))
+        .where(Order.seller_id == seller.id, Order.status == OrderStatus.COMPLETED)
+        .scalar_subquery()
+    )
+
+    stats_result = await session.execute(
+        select(
+            total_listings_sq.label("total_listings"),
+            active_listings_sq.label("active_listings"),
+            total_orders_sq.label("total_orders"),
+            paid_orders_sq.label("paid_orders"),
+            completed_orders_sq.label("completed_orders"),
+            disputed_orders_sq.label("disputed_orders"),
+            gross_sales_sq.label("gross_sales"),
+            completed_sales_sq.label("completed_sales"),
+        )
+    )
+    stats = stats_result.one()
+
+    text = (
+        "<b>Sales Stats</b>\n\n"
+        f"<b>Seller ID:</b> {seller.seller_code}\n"
+        f"<b>Listings:</b> {stats.active_listings or 0} active / {stats.total_listings or 0} total\n"
+        f"<b>Total Orders:</b> {stats.total_orders or 0}\n"
+        f"<b>Paid Orders:</b> {stats.paid_orders or 0}\n"
+        f"<b>Completed Orders:</b> {stats.completed_orders or 0}\n"
+        f"<b>Disputed Orders:</b> {stats.disputed_orders or 0}\n\n"
+        f"<b>Gross Sales (PAID + COMPLETED):</b> NGN {stats.gross_sales or 0:,.2f}\n"
+        f"<b>Released Sales (COMPLETED):</b> NGN {stats.completed_sales or 0:,.2f}"
+    )
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=get_seller_actions(),
+    )
 
 
 @router.callback_query(F.data == "seller_listings")
