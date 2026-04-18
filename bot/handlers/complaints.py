@@ -101,6 +101,74 @@ async def start_complaint(callback: CallbackQuery, state: FSMContext, session: A
     await state.set_state(ComplaintStates.awaiting_order_selection)
 
 
+@router.callback_query(F.data.startswith("order_dispute_"))
+async def start_complaint_from_order(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    order_id = _callback_int_suffix(callback.data, "order_dispute_")
+    if order_id is None:
+        await safe_answer_callback(callback, text="Invalid order selection", show_alert=True)
+        return
+
+    user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
+    user = user_result.scalars().first()
+    if not user:
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
+        return
+
+    order_result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.listing))
+        .where(Order.id == order_id)
+    )
+    order = order_result.scalars().first()
+    if not order:
+        await safe_answer_callback(callback, text="Order not found", show_alert=True)
+        return
+
+    seller_profile_result = await session.execute(select(SellerProfile).where(SellerProfile.user_id == user.id))
+    seller_profile = seller_profile_result.scalars().first()
+    seller_id = seller_profile.id if seller_profile else None
+
+    if order.buyer_id != user.id and order.seller_id != seller_id:
+        await safe_answer_callback(callback, text="You can only dispute your own orders", show_alert=True)
+        return
+
+    if order.status not in [OrderStatus.PAID, OrderStatus.COMPLETED]:
+        await safe_answer_callback(
+            callback,
+            text="Only PAID or COMPLETED orders can be disputed.",
+            show_alert=True,
+        )
+        return
+
+    existing_complaint_result = await session.execute(
+        select(Complaint.id).where(Complaint.order_id == order.id)
+    )
+    existing_complaint_id = existing_complaint_result.scalar_one_or_none()
+    if existing_complaint_id is not None:
+        await safe_answer_callback(
+            callback,
+            text=f"Complaint already exists for this order (#{existing_complaint_id}).",
+            show_alert=True,
+        )
+        return
+
+    await safe_answer_callback(callback)
+    await state.update_data(order_id=order.id)
+    await safe_replace_with_screen(
+        callback,
+        f"Order #{order.id} - {order.listing.title if order.listing else 'Unknown item'}\n\n"
+        "What is the issue?\n\n"
+        "Examples:\n"
+        "- Non-receipt of item\n"
+        "- Item does not match description\n"
+        "- Item is damaged\n"
+        "- Seller is unresponsive\n\n"
+        "Please describe the issue:",
+        parse_mode="HTML",
+    )
+    await state.set_state(ComplaintStates.awaiting_subject)
+
+
 @router.callback_query(F.data.startswith("complaint_order_"), StateFilter(ComplaintStates.awaiting_order_selection))
 async def select_complaint_order(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
     order_id = _callback_int_suffix(callback.data, "complaint_order_")

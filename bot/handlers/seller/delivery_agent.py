@@ -352,8 +352,11 @@ async def delivery_agent_signup_vehicle(message: Message, state: FSMContext, ses
 
 
 @router.callback_query(F.data.startswith("delivery_open_"))
+@router.callback_query(F.data.startswith("delivery_details_"))
 async def delivery_open_job(callback: CallbackQuery, session: AsyncSession):
     delivery_id = _parse_callback_id(callback.data, "delivery_open_")
+    if delivery_id is None:
+        delivery_id = _parse_callback_id(callback.data, "delivery_details_")
     if delivery_id is None:
         await safe_answer_callback(callback, "Invalid delivery ID", show_alert=True)
         return
