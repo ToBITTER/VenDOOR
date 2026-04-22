@@ -15,6 +15,21 @@ def _full_name(first_name: str | None, last_name: str | None) -> str:
     return f"{first_name or ''} {last_name or ''}".strip() or "Unknown"
 
 
+def _seller_pickup_location(seller: SellerProfile | None) -> str:
+    if not seller:
+        return "Location unavailable"
+    hall = (seller.hall or "").strip()
+    room = (seller.room_number or "").strip()
+    address = (seller.address or "").strip()
+    if hall and room:
+        return f"{hall}, Room {room}"
+    if hall:
+        return hall
+    if address:
+        return address
+    return "Location unavailable"
+
+
 def set_bot_instance(bot):
     """Set the global bot instance for sending messages."""
     global bot_instance
@@ -116,14 +131,14 @@ async def notify_agent_delivery_assigned(delivery_id: int, session: AsyncSession
         total_items += order.quantity
         seller = order.seller
         seller_name = (
-            _full_name(seller.user.first_name, seller.user.last_name) if seller and seller.user else "Unknown"
+            (seller.full_name.strip() if seller and seller.full_name else None)
+            or (_full_name(seller.user.first_name, seller.user.last_name) if seller and seller.user else "Unknown")
         )
-        room = seller.room_number if seller else "N/A"
-        hall = seller.hall if seller else "N/A"
+        location = _seller_pickup_location(seller)
 
         message_lines.append(
             f"{idx}️⃣ <b>{seller_name}</b>\n"
-            f"   Room: {room}, Hall: {hall}\n"
+            f"   Pickup: {location}\n"
             f"   Item: {order.quantity}× {order.listing.title}\n"
         )
 

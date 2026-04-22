@@ -2,6 +2,8 @@
 Buyer orders handler - view orders, confirm receipt, raise disputes.
 """
 
+import re
+
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import select
@@ -25,6 +27,17 @@ def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
     if not value.isdigit():
         return None
     return int(value)
+
+
+def _cart_group_ref(order: Order) -> str | None:
+    ref = str(order.transaction_ref or "").strip()
+    if not ref.startswith("VENDOOR_CART_"):
+        return None
+    # Orders created from cart payment share this root reference.
+    # Additional orders may be stored as "<root>_<order_id>".
+    if re.search(r"_\d+$", ref):
+        return re.sub(r"_\d+$", "", ref)
+    return ref
 
 
 async def _effective_delivery(order: Order, session: AsyncSession) -> Delivery | None:
@@ -65,11 +78,25 @@ async def _group_orders_by_delivery(orders: list[Order], session: AsyncSession) 
                 {"kind": "delivery", "delivery": delivery, "orders": [], "latest": order.created_at},
             )
         else:
-            key = f"single:{order.id}"
-            group = groups.setdefault(
-                key,
-                {"kind": "single", "delivery": None, "orders": [], "latest": order.created_at},
-            )
+            cart_ref = _cart_group_ref(order)
+            if cart_ref:
+                key = f"cart:{cart_ref}"
+                group = groups.setdefault(
+                    key,
+                    {
+                        "kind": "cart",
+                        "delivery": None,
+                        "orders": [],
+                        "latest": order.created_at,
+                        "cart_ref": cart_ref,
+                    },
+                )
+            else:
+                key = f"single:{order.id}"
+                group = groups.setdefault(
+                    key,
+                    {"kind": "single", "delivery": None, "orders": [], "latest": order.created_at},
+                )
         group["orders"].append(order)
         if order.created_at > group["latest"]:
             group["latest"] = order.created_at
@@ -118,6 +145,13 @@ def _delivery_group_actions_keyboard(delivery_id: int, fallback_order_id: int, c
     rows = [[InlineKeyboardButton(text="Track Delivery", callback_data=f"order_track_{fallback_order_id}")]]
     if can_confirm:
         rows.append([InlineKeyboardButton(text="Confirm Receipt", callback_data=f"order_confirm_group_{delivery_id}")])
+    rows.append([InlineKeyboardButton(text="Raise Dispute", callback_data=f"order_dispute_{fallback_order_id}")])
+    rows.append([InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _cart_group_actions_keyboard(fallback_order_id: int) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="Track Delivery", callback_data=f"order_track_{fallback_order_id}")]]
     rows.append([InlineKeyboardButton(text="Raise Dispute", callback_data=f"order_dispute_{fallback_order_id}")])
     rows.append([InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -234,7 +268,12 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
         title = (
             first_order.listing.title if len(group_orders) == 1 and first_order.listing else f"{len(group_orders)} items"
         )
-        group_label = f"Delivery #{effective_delivery.id}" if effective_delivery else f"Order #{first_order.id}"
+        if effective_delivery:
+            group_label = f"Delivery #{effective_delivery.id}"
+        elif group.get("kind") == "cart":
+            group_label = f"Order Bundle #{first_order.id}"
+        else:
+            group_label = f"Order #{first_order.id}"
 
         text += (
             f"<b>{group_label}</b>\n"
@@ -251,11 +290,23 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
             [
                 [
                     InlineKeyboardButton(
-                        text=(f"Delivery #{group['delivery'].id}" if group["delivery"] else f"Order #{group['orders'][0].id}"),
+                        text=(
+                            f"Delivery #{group['delivery'].id}"
+                            if group["delivery"]
+                            else (
+                                f"Order Bundle #{group['orders'][0].id}"
+                                if group.get("kind") == "cart"
+                                else f"Order #{group['orders'][0].id}"
+                            )
+                        ),
                         callback_data=(
                             f"view_delivery_group_{group['delivery'].id}"
                             if group["delivery"]
-                            else f"view_order_{group['orders'][0].id}"
+                            else (
+                                f"view_cart_group_{group['orders'][0].id}"
+                                if group.get("kind") == "cart"
+                                else f"view_order_{group['orders'][0].id}"
+                            )
                         ),
                     )
                 ]
@@ -266,6 +317,81 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
     )
 
     await safe_replace_with_screen(callback, text, parse_mode="HTML", reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("view_cart_group_"))
+async def view_cart_group(callback: CallbackQuery, session: AsyncSession):
+    order_id = _callback_int_suffix(callback.data, "view_cart_group_")
+    if order_id is None:
+        await safe_answer_callback(callback, text="Invalid order bundle selection", show_alert=True)
+        return
+
+    user_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
+    user = user_result.scalars().first()
+    if not user:
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
+        return
+
+    seed_result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.listing), selectinload(Order.seller).selectinload(SellerProfile.user))
+        .where(Order.id == order_id)
+    )
+    seed_order = seed_result.scalars().first()
+    if not seed_order or seed_order.buyer_id != user.id:
+        await safe_answer_callback(callback, text="Order bundle not found", show_alert=True)
+        return
+
+    cart_ref = _cart_group_ref(seed_order)
+    if not cart_ref:
+        await safe_answer_callback(callback, text="This order is not part of a bundle", show_alert=True)
+        return
+
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.listing), selectinload(Order.seller).selectinload(SellerProfile.user))
+        .where(Order.buyer_id == user.id)
+        .where(Order.transaction_ref.like(f"{cart_ref}%"))
+        .order_by(Order.created_at.asc(), Order.id.asc())
+    )
+    orders = result.scalars().all()
+    if not orders:
+        await safe_answer_callback(callback, text="Order bundle not found", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    total_items = sum(order.quantity for order in orders)
+    total_amount = sum(order.amount for order in orders)
+    group_status = "PAID"
+    if any(order.status == OrderStatus.DISPUTED for order in orders):
+        group_status = "DISPUTED"
+    elif all(order.status == OrderStatus.COMPLETED for order in orders):
+        group_status = "COMPLETED"
+    elif any(order.status == OrderStatus.CANCELLED for order in orders):
+        group_status = "CANCELLED"
+    elif any(order.status == OrderStatus.REFUNDED for order in orders):
+        group_status = "REFUNDED"
+
+    lines = [
+        f"<b>Order Bundle #{orders[0].id}</b>",
+        "",
+        f"<b>Total Items:</b> {total_items}",
+        f"<b>Total Amount:</b> NGN {total_amount:,.2f}",
+        f"<b>Status:</b> {group_status}",
+        "",
+        "<b>Items</b>",
+    ]
+    for order in orders:
+        seller_name = order.seller.user.first_name if order.seller and order.seller.user else "Unknown seller"
+        item_title = order.listing.title if order.listing else "Unknown item"
+        lines.append(f"#{order.id} - {order.quantity} x {item_title} ({seller_name})")
+
+    await safe_replace_with_screen(
+        callback,
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=_cart_group_actions_keyboard(orders[0].id),
+    )
 
 
 @router.callback_query(F.data.startswith("view_delivery_group_"))

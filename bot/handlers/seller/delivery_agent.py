@@ -49,6 +49,89 @@ def _full_name(first_name: str | None, last_name: str | None) -> str:
     return f"{first_name or ''} {last_name or ''}".strip() or "Unknown"
 
 
+def _seller_display_name(order: Order) -> str:
+    if order.seller:
+        if order.seller.full_name:
+            return order.seller.full_name.strip()
+        if order.seller.user:
+            return _full_name(order.seller.user.first_name, order.seller.user.last_name)
+    return "Unknown"
+
+
+def _seller_location(order: Order) -> str:
+    if not order.seller:
+        return "Location unavailable"
+    hall = (order.seller.hall or "").strip()
+    room = (order.seller.room_number or "").strip()
+    address = (order.seller.address or "").strip()
+    if hall and room:
+        return f"{hall}, Room {room}"
+    if hall:
+        return hall
+    if address:
+        return address
+    return "Location unavailable"
+
+
+def _delivery_order_payload(delivery_order: DeliveryOrder) -> dict:
+    order = delivery_order.order
+    if not order:
+        return {
+            "id": int(delivery_order.id),
+            "order_id": int(delivery_order.order_id),
+            "sequence": int(delivery_order.sequence),
+            "seller_name": "Unknown",
+            "seller_location": "Location unavailable",
+            "item_title": "Item",
+            "quantity": 1,
+        }
+    return {
+        "id": int(delivery_order.id),
+        "order_id": int(order.id),
+        "sequence": int(delivery_order.sequence),
+        "seller_name": _seller_display_name(order),
+        "seller_location": _seller_location(order),
+        "item_title": order.listing.title if order.listing else "Item",
+        "quantity": int(order.quantity),
+    }
+
+
+def _build_pickup_stops(delivery_orders: list[DeliveryOrder]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for delivery_order in sorted(delivery_orders, key=lambda item: (item.sequence, item.id)):
+        payload = _delivery_order_payload(delivery_order)
+        order = delivery_order.order
+        if order and order.seller_id is not None:
+            group_key = f"seller:{order.seller_id}"
+        else:
+            group_key = f"legacy:{delivery_order.id}"
+
+        entry = grouped.get(group_key)
+        if not entry:
+            entry = {
+                "id": payload["id"],  # First delivery_order id used for callback identity.
+                "order_id": payload["order_id"],
+                "sequence": payload["sequence"],
+                "seller_name": payload["seller_name"],
+                "seller_location": payload["seller_location"],
+                "delivery_order_ids": [],
+                "items": [],
+            }
+            grouped[group_key] = entry
+
+        entry["delivery_order_ids"].append(payload["id"])
+        entry["items"].append(
+            {
+                "title": payload["item_title"],
+                "quantity": int(payload["quantity"]),
+            }
+        )
+
+    stops = list(grouped.values())
+    stops.sort(key=lambda item: (int(item.get("sequence", 0)), int(item.get("id", 0))))
+    return stops
+
+
 async def _notify_admins_new_agent_application(
     message: Message, agent: DeliveryAgent, session: AsyncSession
 ) -> None:
@@ -506,32 +589,44 @@ def _parse_manual_location_input(text: str) -> tuple[Decimal | None, Decimal | N
     return None, None, raw
 
 
-def _pickup_stop_text(order: Order, step_num: int, total_steps: int) -> str:
-    seller_name = "Unknown"
-    seller_room = "N/A"
-    seller_hall = "N/A"
-    if order.seller:
-        seller_room = order.seller.room_number or "N/A"
-        seller_hall = order.seller.hall or "N/A"
-        if order.seller.user:
-            seller_name = _full_name(order.seller.user.first_name, order.seller.user.last_name)
+def _pickup_stop_text(step_num: int, total_steps: int, stop_data: dict) -> str:
+    seller_name = stop_data.get("seller_name", "Unknown")
+    seller_location = stop_data.get("seller_location", "Location unavailable")
+    items = stop_data.get("items", [])
+    item_lines = []
+    total_qty = 0
+    for item in items:
+        qty = int(item.get("quantity", 0))
+        title = str(item.get("title") or "Item")
+        total_qty += qty
+        item_lines.append(f"- {qty} x {title}")
 
-    listing_title = order.listing.title if order.listing else "Unknown item"
+    if not item_lines:
+        item_lines.append("- 1 x Item")
+        total_qty = max(total_qty, 1)
+
     return (
-        f"<b>Pickup Stop {step_num}/{total_steps}</b>\n\n"
+        f"<b>Pickup Stop {step_num} of {total_steps}</b>\n\n"
         f"<b>Seller:</b> {seller_name}\n"
-        f"<b>Room:</b> {seller_room}\n"
-        f"<b>Hall:</b> {seller_hall}\n\n"
-        f"<b>Items:</b> {order.quantity} x {listing_title}\n\n"
-        "Please confirm your arrival at this location."
+        f"<b>Pickup Location:</b> {seller_location}\n"
+        f"<b>Total Units:</b> {total_qty}\n"
+        f"<b>Items:</b>\n" + "\n".join(item_lines) + "\n\n"
+        "Confirm arrival when you reach this pickup location."
     )
 
 
 def _pickup_checklist(delivery_orders_data: list[dict], current_index: int) -> str:
-    lines = ["", "<b>Pickup Checklist</b>"]
+    lines = ["", "<b>Pickup Progress</b>"]
     for idx, delivery_order_data in enumerate(delivery_orders_data, start=1):
-        marker = "[x]" if idx - 1 < current_index else "[ ]"
-        lines.append(f"{marker} Stop {idx}")
+        if idx - 1 < current_index:
+            marker = "[DONE]"
+        elif idx - 1 == current_index:
+            marker = "[NEXT]"
+        else:
+            marker = "[PENDING]"
+        seller_name = delivery_order_data.get("seller_name", "Seller")
+        seller_location = delivery_order_data.get("seller_location", "Location unavailable")
+        lines.append(f"{marker} Stop {idx}: {seller_name} - {seller_location}")
     return "\n".join(lines)
 
 
@@ -550,16 +645,12 @@ async def _show_next_seller_confirmation(callback: CallbackQuery, state: FSMCont
         return
 
     current_do_data = delivery_orders_data[order_index]
-    order = await session.get(Order, int(current_do_data["order_id"]))
-    if not order:
-        await _safe_edit_or_reply(callback, "Order not found. Please retry the delivery flow.")
-        return
 
     step_num = order_index + 1
     total_steps = len(delivery_orders_data)
     await _safe_edit_or_reply(
         callback,
-        _pickup_stop_text(order, step_num, total_steps) + _pickup_checklist(delivery_orders_data, order_index),
+        _pickup_stop_text(step_num, total_steps, current_do_data) + _pickup_checklist(delivery_orders_data, order_index),
         parse_mode="HTML",
         reply_markup=_arrival_keyboard(int(delivery_id), int(current_do_data["id"])),
     )
@@ -567,6 +658,7 @@ async def _show_next_seller_confirmation(callback: CallbackQuery, state: FSMCont
     await state.update_data(
         current_delivery_order_id=int(current_do_data["id"]),
         current_order_id=int(current_do_data["order_id"]),
+        current_delivery_order_ids=[int(value) for value in current_do_data.get("delivery_order_ids", [int(current_do_data["id"])])],
     )
 
 
@@ -586,15 +678,11 @@ async def _show_next_seller_confirmation_from_message(
         return
 
     current_do_data = delivery_orders_data[order_index]
-    order = await session.get(Order, int(current_do_data["order_id"]))
-    if not order:
-        await message.answer("Order not found. Please retry the delivery flow.")
-        return
 
     step_num = order_index + 1
     total_steps = len(delivery_orders_data)
     await message.answer(
-        _pickup_stop_text(order, step_num, total_steps) + _pickup_checklist(delivery_orders_data, order_index),
+        _pickup_stop_text(step_num, total_steps, current_do_data) + _pickup_checklist(delivery_orders_data, order_index),
         parse_mode="HTML",
         reply_markup=_arrival_keyboard(int(delivery_id), int(current_do_data["id"])),
     )
@@ -602,6 +690,7 @@ async def _show_next_seller_confirmation_from_message(
     await state.update_data(
         current_delivery_order_id=int(current_do_data["id"]),
         current_order_id=int(current_do_data["order_id"]),
+        current_delivery_order_ids=[int(value) for value in current_do_data.get("delivery_order_ids", [int(current_do_data["id"])])],
     )
 
 
@@ -648,10 +737,7 @@ async def delivery_start_pickup(callback: CallbackQuery, state: FSMContext, sess
     await state.update_data(
         delivery_id=delivery_id,
         order_index=0,
-        delivery_orders_data=[
-            {"id": int(delivery_order.id), "order_id": int(delivery_order.order_id), "sequence": int(delivery_order.sequence)}
-            for delivery_order in delivery_orders
-        ],
+        delivery_orders_data=_build_pickup_stops(delivery_orders),
     )
     await _show_next_seller_confirmation(callback, state, session)
 
@@ -709,38 +795,37 @@ async def receive_pickup_photo(message: Message, state: FSMContext, session: Asy
     data = await state.get_data()
     delivery_id = data.get("delivery_id")
     delivery_order_id = data.get("current_delivery_order_id")
+    delivery_order_ids = [int(value) for value in (data.get("current_delivery_order_ids") or [])]
     current_order_id = data.get("current_order_id")
     order_index = int(data.get("order_index", 0))
     delivery_orders_data = data.get("delivery_orders_data", [])
 
-    if delivery_id is None or delivery_order_id is None or current_order_id is None:
+    if delivery_id is None or delivery_order_id is None:
         await state.clear()
         await message.reply("Pickup session expired. Please restart from your delivery card.")
         return
 
     photo_file_id = message.photo[-1].file_id
-    updated = await update_delivery_order_status(
-        int(delivery_order_id), session, note=f"Pickup proof photo: {photo_file_id}"
-    )
-    if not updated:
-        await session.rollback()
-        await message.reply("Could not update pickup state. Please retry.")
-        return
+    ids_to_update = delivery_order_ids or [int(delivery_order_id)]
+    for do_id in ids_to_update:
+        updated = await update_delivery_order_status(do_id, session, note=f"Pickup proof photo: {photo_file_id}")
+        if not updated:
+            await session.rollback()
+            await message.reply("Could not update pickup state. Please retry.")
+            return
 
     await session.commit()
 
     if not delivery_orders_data:
         delivery = await get_delivery_with_orders(int(delivery_id), session)
         delivery_orders = sorted(delivery.delivery_orders or [], key=lambda item: (item.sequence, item.id)) if delivery else []
-        delivery_orders_data = [
-            {"id": int(delivery_order.id), "order_id": int(delivery_order.order_id), "sequence": int(delivery_order.sequence)}
-            for delivery_order in delivery_orders
-        ]
+        delivery_orders_data = _build_pickup_stops(delivery_orders)
         await state.update_data(delivery_orders_data=delivery_orders_data)
 
     if delivery_orders_data:
         for idx, delivery_order_data in enumerate(delivery_orders_data):
-            if int(delivery_order_data["id"]) == int(delivery_order_id):
+            do_ids = [int(value) for value in delivery_order_data.get("delivery_order_ids", [int(delivery_order_data["id"])])]
+            if int(delivery_order_id) in do_ids:
                 order_index = idx
                 break
 
@@ -794,9 +879,12 @@ async def delivery_proceed_next(callback: CallbackQuery, state: FSMContext, sess
         await safe_answer_callback(callback, "No pickup stops found for this delivery.", show_alert=True)
         return
 
+    grouped_stops = _build_pickup_stops(delivery_orders)
     next_index = 0
-    for idx, delivery_order in enumerate(delivery_orders):
-        if delivery_order.picked_up_at is None:
+    picked_map = {int(item.id): item.picked_up_at is not None for item in delivery_orders}
+    for idx, stop in enumerate(grouped_stops):
+        stop_ids = [int(value) for value in stop.get("delivery_order_ids", [])]
+        if any(not picked_map.get(do_id, False) for do_id in stop_ids):
             next_index = idx
             break
     else:
@@ -812,10 +900,7 @@ async def delivery_proceed_next(callback: CallbackQuery, state: FSMContext, sess
     await state.update_data(
         delivery_id=delivery_id,
         order_index=next_index,
-        delivery_orders_data=[
-            {"id": int(delivery_order.id), "order_id": int(delivery_order.order_id), "sequence": int(delivery_order.sequence)}
-            for delivery_order in delivery_orders
-        ],
+        delivery_orders_data=grouped_stops,
     )
     await safe_answer_callback(callback)
     await _show_next_seller_confirmation(callback, state, session)
