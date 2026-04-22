@@ -4,7 +4,6 @@ Collects delivery details and initiates payment.
 """
 
 from datetime import datetime
-import re
 
 from aiogram import F, Router
 from aiogram.filters import StateFilter
@@ -16,6 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from bot.helpers.telegram import safe_answer_callback, safe_edit_text
+from bot.helpers.residence import (
+    build_floor_keyboard,
+    build_hall_keyboard,
+    build_room_keyboard,
+    build_wing_keyboard,
+    hall_from_index,
+)
 from bot.keyboards.main_menu import get_main_menu_inline
 from core.config import get_settings
 from db.models import CartItem, Listing, Order, OrderStatus, User
@@ -27,27 +33,13 @@ settings = get_settings()
 
 
 class CheckoutStates(StatesGroup):
-    awaiting_delivery_address = State()
+    awaiting_delivery_name = State()
+    awaiting_delivery_hall = State()
+    awaiting_delivery_wing = State()
+    awaiting_delivery_floor = State()
+    awaiting_delivery_room = State()
     awaiting_delivery_details = State()
     confirming_order = State()
-
-
-ADDRESS_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\s\-\/]{1,30}\s+[A-Za-z]\d{1,4}$")
-
-
-def _parse_delivery_identity(raw_text: str) -> tuple[str, str] | None:
-    text = raw_text.strip()
-    if "|" in text:
-        name, location = [part.strip() for part in text.split("|", 1)]
-    elif "," in text:
-        name, location = [part.strip() for part in text.split(",", 1)]
-    else:
-        return None
-    if len(name) < 3:
-        return None
-    if not ADDRESS_PATTERN.match(location):
-        return None
-    return name, location
 
 
 def _resolve_customer_email(user: User, buyer_telegram_id: str) -> str:
@@ -96,8 +88,7 @@ async def start_checkout(callback: CallbackQuery, state: FSMContext, session: As
             f"Total: NGN {total_amount:,.2f}\n\n"
             "<b>Escrow Protection</b>\n"
             "Your payment is safe. Seller gets paid only after delivery confirmation window.\n\n"
-            "Send delivery details in this format:\n"
-            "<code>Full Name | HALL A123</code>"
+            "Send your full delivery name to continue."
         )
         await state.update_data(checkout_mode="cart")
     else:
@@ -119,8 +110,7 @@ async def start_checkout(callback: CallbackQuery, state: FSMContext, session: As
             "(Includes 5% platform fee)\n\n"
             "<b>Escrow Protection</b>\n"
             "Your payment is safe. Seller gets paid only after you confirm receipt.\n\n"
-            "Send delivery details in this format:\n"
-            "<code>Full Name | HALL A123</code>"
+            "Send your full delivery name to continue."
         )
         await state.update_data(checkout_mode="single")
 
@@ -133,24 +123,137 @@ async def start_checkout(callback: CallbackQuery, state: FSMContext, session: As
         await callback.message.answer(text, parse_mode="HTML")
     else:
         await callback.bot.send_message(chat_id=callback.from_user.id, text=text, parse_mode="HTML")
-    await state.set_state(CheckoutStates.awaiting_delivery_address)
+    await state.set_state(CheckoutStates.awaiting_delivery_name)
 
 
-@router.message(CheckoutStates.awaiting_delivery_address)
-async def handle_delivery_address(message: Message, state: FSMContext):
-    parsed = _parse_delivery_identity(message.text or "")
-    if not parsed:
-        await message.reply("Use this format: Full Name | HALL A123")
+@router.message(CheckoutStates.awaiting_delivery_name)
+async def handle_delivery_name(message: Message, state: FSMContext):
+    full_name = (message.text or "").strip()
+    if len(full_name) < 3:
+        await message.reply("Please enter your full name (at least 3 characters).")
         return
 
-    full_name, hall_room = parsed
-    await state.update_data(
-        delivery_contact_name=full_name,
-        delivery_hall_room=hall_room,
-        delivery_address=f"Name: {full_name}\nLocation: {hall_room}",
-    )
-
+    await state.update_data(delivery_contact_name=full_name)
     await message.answer(
+        "<b>Delivery Location</b>\n\nSelect your hall:",
+        parse_mode="HTML",
+        reply_markup=build_hall_keyboard("checkout_hall_"),
+    )
+    await state.set_state(CheckoutStates.awaiting_delivery_hall)
+
+
+@router.callback_query(
+    F.data.startswith("checkout_hall_"),
+    StateFilter(CheckoutStates.awaiting_delivery_hall),
+)
+async def handle_delivery_hall(callback: CallbackQuery, state: FSMContext):
+    payload = (callback.data or "").replace("checkout_hall_", "", 1).strip()
+    if not payload.isdigit():
+        await safe_answer_callback(callback, text="Invalid hall selection.", show_alert=True)
+        return
+
+    hall = hall_from_index(int(payload))
+    if not hall:
+        await safe_answer_callback(callback, text="Invalid hall selection.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    await state.update_data(delivery_hall=hall)
+    await safe_edit_text(
+        callback,
+        "<b>Delivery Location</b>\n\nSelect your wing (A-H):",
+        parse_mode="HTML",
+        reply_markup=build_wing_keyboard("checkout_wing_"),
+    )
+    await state.set_state(CheckoutStates.awaiting_delivery_wing)
+
+
+@router.callback_query(
+    F.data.startswith("checkout_wing_"),
+    StateFilter(CheckoutStates.awaiting_delivery_wing),
+)
+async def handle_delivery_wing(callback: CallbackQuery, state: FSMContext):
+    wing = (callback.data or "").replace("checkout_wing_", "", 1).strip().upper()
+    if wing not in {"A", "B", "C", "D", "E", "F", "G", "H"}:
+        await safe_answer_callback(callback, text="Invalid wing selection.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    await state.update_data(delivery_wing=wing)
+    await safe_edit_text(
+        callback,
+        "<b>Delivery Location</b>\n\nSelect your floor:",
+        parse_mode="HTML",
+        reply_markup=build_floor_keyboard("checkout_floor_"),
+    )
+    await state.set_state(CheckoutStates.awaiting_delivery_floor)
+
+
+@router.callback_query(
+    F.data.startswith("checkout_floor_"),
+    StateFilter(CheckoutStates.awaiting_delivery_floor),
+)
+async def handle_delivery_floor(callback: CallbackQuery, state: FSMContext):
+    payload = (callback.data or "").replace("checkout_floor_", "", 1).strip()
+    if not payload.isdigit():
+        await safe_answer_callback(callback, text="Invalid floor selection.", show_alert=True)
+        return
+    floor = int(payload)
+    if floor not in {1, 2, 3, 4}:
+        await safe_answer_callback(callback, text="Invalid floor selection.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    await state.update_data(delivery_floor=floor)
+    await safe_edit_text(
+        callback,
+        "<b>Delivery Location</b>\n\nSelect your room number:",
+        parse_mode="HTML",
+        reply_markup=build_room_keyboard("checkout_room_", floor),
+    )
+    await state.set_state(CheckoutStates.awaiting_delivery_room)
+
+
+@router.callback_query(
+    F.data.startswith("checkout_room_"),
+    StateFilter(CheckoutStates.awaiting_delivery_room),
+)
+async def handle_delivery_room(callback: CallbackQuery, state: FSMContext):
+    payload = (callback.data or "").replace("checkout_room_", "", 1).strip()
+    if not payload.isdigit():
+        await safe_answer_callback(callback, text="Invalid room selection.", show_alert=True)
+        return
+
+    room_number = int(payload)
+    if room_number < 101 or room_number > 411:
+        await safe_answer_callback(callback, text="Invalid room selection.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    floor = int(data.get("delivery_floor", 0))
+    if room_number // 100 != floor:
+        await safe_answer_callback(callback, text="Room does not match selected floor.", show_alert=True)
+        return
+
+    hall = str(data.get("delivery_hall") or "").strip()
+    wing = str(data.get("delivery_wing") or "").strip().upper()
+    full_name = str(data.get("delivery_contact_name") or "").strip()
+    if not hall or wing not in {"A", "B", "C", "D", "E", "F", "G", "H"} or not full_name:
+        await safe_answer_callback(callback, text="Delivery location session expired. Restart checkout.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    await state.update_data(
+        delivery_room_number=room_number,
+        delivery_address=(
+            f"Name: {full_name}\n"
+            f"Hall: {hall}\n"
+            f"Wing: {wing}\n"
+            f"Room: {room_number}"
+        ),
+    )
+    await safe_edit_text(
+        callback,
         "<b>Delivery Details</b>\n\n"
         "Any special instructions for delivery?\n"
         "(e.g., 'Leave at front desk', 'Call before arriving')\n\n"

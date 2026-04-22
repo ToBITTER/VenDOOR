@@ -70,6 +70,7 @@ def get_category_hero(category_name: str, accessory_subcategory_name: str | None
     mapping = {
         "IPADS": "ipads.png",
         "IPODS": "ipods.png",
+        "WIGS": "wigs.png",
         "CLOTHES": "clothes.png",
         "ELECTRONICS": "laptop.png",
         "SKINCARE": "skincare.png",

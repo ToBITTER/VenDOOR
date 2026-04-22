@@ -12,6 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
+from bot.helpers.residence import (
+    build_floor_keyboard,
+    build_hall_keyboard,
+    build_room_keyboard,
+    build_wing_keyboard,
+    hall_from_index,
+)
 from bot.keyboards.main_menu import get_confirmation_keyboard, get_main_menu_inline
 from core.config import get_settings
 from db.models import SellerProfile, User
@@ -26,6 +33,8 @@ class SellerRegistrationStates(StatesGroup):
     awaiting_student_choice = State()
     awaiting_student_email = State()
     awaiting_hall = State()
+    awaiting_wing = State()
+    awaiting_floor = State()
     awaiting_room_number = State()
     awaiting_id_document = State()
     awaiting_address = State()
@@ -156,37 +165,117 @@ async def handle_student_email(message: Message, state: FSMContext):
     await state.update_data(student_email=email)
 
     await message.answer(
-        "<b>Hall</b>\n\n"
-        "Enter your hall of residence.",
+        "<b>Residence</b>\n\n"
+        "Select your hall of residence:",
         parse_mode="HTML",
+        reply_markup=build_hall_keyboard("seller_hall_"),
     )
     await state.set_state(SellerRegistrationStates.awaiting_hall)
 
 
-@router.message(SellerRegistrationStates.awaiting_hall)
-async def handle_hall(message: Message, state: FSMContext):
-    hall = (message.text or "").strip()
-    if len(hall) < 2:
-        await message.reply("Please enter a valid hall name.")
+@router.callback_query(
+    F.data.startswith("seller_hall_"),
+    StateFilter(SellerRegistrationStates.awaiting_hall),
+)
+async def handle_hall(callback: CallbackQuery, state: FSMContext):
+    payload = (callback.data or "").replace("seller_hall_", "", 1).strip()
+    if not payload.isdigit():
+        await safe_answer_callback(callback, text="Invalid hall selection.", show_alert=True)
         return
 
+    hall = hall_from_index(int(payload))
+    if not hall:
+        await safe_answer_callback(callback, text="Invalid hall selection.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
     await state.update_data(hall=hall)
-    await message.answer(
-        "<b>Room Number</b>\n\nEnter your room number.",
+    await safe_replace_with_screen(
+        callback,
+        "<b>Residence</b>\n\nSelect your wing (A-H):",
         parse_mode="HTML",
+        reply_markup=build_wing_keyboard("seller_wing_"),
+    )
+    await state.set_state(SellerRegistrationStates.awaiting_wing)
+
+
+@router.callback_query(
+    F.data.startswith("seller_wing_"),
+    StateFilter(SellerRegistrationStates.awaiting_wing),
+)
+async def handle_wing(callback: CallbackQuery, state: FSMContext):
+    wing = (callback.data or "").replace("seller_wing_", "", 1).strip().upper()
+    if wing not in {"A", "B", "C", "D", "E", "F", "G", "H"}:
+        await safe_answer_callback(callback, text="Invalid wing selection.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    await state.update_data(room_wing=wing)
+    await safe_replace_with_screen(
+        callback,
+        "<b>Residence</b>\n\nSelect your floor:",
+        parse_mode="HTML",
+        reply_markup=build_floor_keyboard("seller_floor_"),
+    )
+    await state.set_state(SellerRegistrationStates.awaiting_floor)
+
+
+@router.callback_query(
+    F.data.startswith("seller_floor_"),
+    StateFilter(SellerRegistrationStates.awaiting_floor),
+)
+async def handle_floor(callback: CallbackQuery, state: FSMContext):
+    payload = (callback.data or "").replace("seller_floor_", "", 1).strip()
+    if not payload.isdigit():
+        await safe_answer_callback(callback, text="Invalid floor selection.", show_alert=True)
+        return
+
+    floor = int(payload)
+    if floor not in {1, 2, 3, 4}:
+        await safe_answer_callback(callback, text="Invalid floor selection.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    await state.update_data(room_floor=floor)
+    await safe_replace_with_screen(
+        callback,
+        "<b>Residence</b>\n\nSelect your room number:",
+        parse_mode="HTML",
+        reply_markup=build_room_keyboard("seller_room_", floor),
     )
     await state.set_state(SellerRegistrationStates.awaiting_room_number)
 
 
-@router.message(SellerRegistrationStates.awaiting_room_number)
-async def handle_room_number(message: Message, state: FSMContext):
-    room_number = (message.text or "").strip()
-    if len(room_number) < 1:
-        await message.reply("Please enter your room number.")
+@router.callback_query(
+    F.data.startswith("seller_room_"),
+    StateFilter(SellerRegistrationStates.awaiting_room_number),
+)
+async def handle_room_number(callback: CallbackQuery, state: FSMContext):
+    payload = (callback.data or "").replace("seller_room_", "", 1).strip()
+    if not payload.isdigit():
+        await safe_answer_callback(callback, text="Invalid room selection.", show_alert=True)
         return
 
-    await state.update_data(room_number=room_number)
-    await message.answer(
+    room_number = int(payload)
+    if room_number < 101 or room_number > 411:
+        await safe_answer_callback(callback, text="Invalid room selection.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    floor = int(data.get("room_floor", 0))
+    if room_number // 100 != floor:
+        await safe_answer_callback(callback, text="Room does not match selected floor.", show_alert=True)
+        return
+
+    wing = str(data.get("room_wing") or "").upper()
+    if wing not in {"A", "B", "C", "D", "E", "F", "G", "H"}:
+        await safe_answer_callback(callback, text="Wing selection missing. Please restart residence step.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    await state.update_data(room_number=f"{wing} {room_number}")
+    await safe_replace_with_screen(
+        callback,
         "<b>ID Document</b>\n\nPlease send a photo of your student ID card.",
         parse_mode="HTML",
     )

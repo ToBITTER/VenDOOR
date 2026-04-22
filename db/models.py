@@ -25,6 +25,7 @@ class Category(str, PyEnum):
     """Product category enum."""
     IPADS = "IPADS"
     IPODS = "IPODS"
+    WIGS = "WIGS"
     JEWELRY = "JEWELRY"
     CLOTHES = "CLOTHES"
     ELECTRONICS = "ELECTRONICS"
