@@ -1,6 +1,6 @@
 """
 Seller registration handler with FSM.
-Handles both student and non-student seller registration.
+Student-only seller registration flow.
 """
 
 from aiogram import F, Router
@@ -37,7 +37,6 @@ class SellerRegistrationStates(StatesGroup):
     awaiting_floor = State()
     awaiting_room_number = State()
     awaiting_id_document = State()
-    awaiting_address = State()
     awaiting_bank_code = State()
     awaiting_account_number = State()
     awaiting_account_name = State()
@@ -67,13 +66,12 @@ async def start_seller_registration(callback: CallbackQuery, state: FSMContext, 
 
     text = (
         "<b>Seller Registration</b>\n\n"
-        "Are you a university student?\n\n"
-        "Student sellers get priority visibility and lower fees."
+        "Seller onboarding is currently available for university students only.\n\n"
+        "Continue to begin your student verification."
     )
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Yes, I am a student", callback_data="seller_student_yes")],
-            [InlineKeyboardButton(text="No, I am not a student", callback_data="seller_student_no")],
+            [InlineKeyboardButton(text="Continue", callback_data="seller_student_yes")],
             [InlineKeyboardButton(text="Cancel", callback_data="back_to_menu")],
         ]
     )
@@ -87,24 +85,12 @@ async def handle_full_name(message: Message, state: FSMContext):
     if len(full_name.split()) < 2:
         await message.reply("Please enter your full name (first and last name).")
         return
-    data = await state.get_data()
     await state.update_data(full_name=full_name)
-    if data.get("is_student"):
-        await message.answer(
-            "<b>Level</b>\n\nSend your level (e.g. 100L, 200L, 300L).",
-            parse_mode="HTML",
-        )
-        await state.set_state(SellerRegistrationStates.awaiting_level)
-        return
-
-    await state.update_data(level="N/A")
     await message.answer(
-        "<b>ID Document</b>\n\n"
-        "Please send a photo of your ID document\n"
-        "(National ID, Passport, Driver's License, etc.)",
+        "<b>Level</b>\n\nSend your level (e.g. 100L, 200L, 300L).",
         parse_mode="HTML",
     )
-    await state.set_state(SellerRegistrationStates.awaiting_id_document)
+    await state.set_state(SellerRegistrationStates.awaiting_level)
 
 
 @router.message(SellerRegistrationStates.awaiting_level)
@@ -126,7 +112,7 @@ async def handle_level(message: Message, state: FSMContext):
 @router.callback_query(F.data == "seller_student_yes", StateFilter(SellerRegistrationStates.awaiting_student_choice))
 async def handle_student_yes(callback: CallbackQuery, state: FSMContext):
     await safe_answer_callback(callback)
-    await state.update_data(is_student=True)
+    await state.update_data(is_student=True, level=None, student_email=None, hall=None, room_number=None)
 
     await safe_replace_with_screen(
         callback,
@@ -140,15 +126,13 @@ async def handle_student_yes(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "seller_student_no", StateFilter(SellerRegistrationStates.awaiting_student_choice))
 async def handle_student_no(callback: CallbackQuery, state: FSMContext):
     await safe_answer_callback(callback)
-    await state.update_data(is_student=False, student_email=None, hall=None, room_number=None, level="N/A")
-
     await safe_replace_with_screen(
         callback,
-        "<b>Seller Registration</b>\n\n"
-        "Send your full name as it appears on your ID card.",
+        "Seller registration is currently available to students only.",
+        reply_markup=get_main_menu_inline(),
         parse_mode="HTML",
     )
-    await state.set_state(SellerRegistrationStates.awaiting_full_name)
+    await state.clear()
 
 
 @router.message(SellerRegistrationStates.awaiting_student_email)
@@ -286,33 +270,6 @@ async def handle_room_number(callback: CallbackQuery, state: FSMContext):
 async def handle_id_document(message: Message, state: FSMContext):
     file_id = message.photo[-1].file_id
     await state.update_data(id_document_url=file_id)
-    data = await state.get_data()
-
-    if data.get("is_student"):
-        await message.answer(
-            "<b>Bank Details</b>\n\n"
-            "Enter your bank code.\n"
-            "Example: 033 (First Bank), 044 (Access Bank), 050 (Ecobank)",
-            parse_mode="HTML",
-        )
-        await state.set_state(SellerRegistrationStates.awaiting_bank_code)
-        return
-
-    await message.answer(
-        "<b>Address</b>\n\nEnter your current residential address.",
-        parse_mode="HTML",
-    )
-    await state.set_state(SellerRegistrationStates.awaiting_address)
-
-
-@router.message(SellerRegistrationStates.awaiting_address)
-async def handle_address(message: Message, state: FSMContext):
-    address = (message.text or "").strip()
-    if len(address) < 5:
-        await message.reply("Please enter a valid address.")
-        return
-
-    await state.update_data(address=address)
     await message.answer(
         "<b>Bank Details</b>\n\n"
         "Enter your bank code.\n"
@@ -366,20 +323,15 @@ async def handle_account_name(message: Message, state: FSMContext):
         return
     data = await state.get_data()
 
-    is_student = data.get("is_student", False)
     confirmation_text = (
         "<b>Confirm Your Details</b>\n\n"
         f"<b>Full Name:</b> {data.get('full_name')}\n"
         f"<b>Level:</b> {data.get('level')}\n"
-        f"<b>Type:</b> {'Student' if is_student else 'Non-Student'}\n"
+        "<b>Type:</b> Student\n"
+        f"<b>Email:</b> {data.get('student_email')}\n"
+        f"<b>Hall:</b> {data.get('hall')}\n"
+        f"<b>Room Number:</b> {data.get('room_number')}\n"
     )
-
-    if is_student:
-        confirmation_text += f"<b>Email:</b> {data.get('student_email')}\n"
-        confirmation_text += f"<b>Hall:</b> {data.get('hall')}\n"
-        confirmation_text += f"<b>Room Number:</b> {data.get('room_number')}\n"
-    else:
-        confirmation_text += f"<b>Address:</b> {data.get('address')}\n"
 
     confirmation_text += (
         f"<b>Bank Code:</b> {data.get('bank_code')}\n"

@@ -67,18 +67,22 @@ def get_category_hero(category_name: str, accessory_subcategory_name: str | None
                 return candidate
         return None
 
-    mapping = {
-        "IPADS": "ipads.png",
-        "IPODS": "ipods.png",
-        "WIGS": "wigs.png",
-        "CLOTHES": "clothes.png",
-        "ELECTRONICS": "laptop.png",
-        "SKINCARE": "skincare.png",
-        "BOOKS": "books.png",
-        "SHOES": "shoes.png",
-        "OTHERS": "others.png",
+    categories_root = BRAND_ROOT / "categories"
+    mapping_candidates = {
+        "IPADS": ["ipads.png"],
+        "IPODS": ["ipods.png"],
+        "WIGS": ["wigs.png", "wigs.jpg", "wigs.jpeg", "wigs.webp"],
+        "CLOTHES": ["clothes.png"],
+        # Electronics is displayed as Laptop in UI. Prefer gadgets hero if provided.
+        "ELECTRONICS": ["gadgets.png", "gadgets.jpg", "gadgets.jpeg", "gadgets.webp", "laptop.png"],
+        "SKINCARE": ["skincare.png"],
+        "BOOKS": ["books.png"],
+        "SHOES": ["shoes.png"],
+        "OTHERS": ["others.png"],
     }
-    filename = mapping.get(category_name)
-    if not filename:
-        return None
-    return _file_input(BRAND_ROOT / "categories" / filename)
+    candidates = mapping_candidates.get(category_name, [])
+    for filename in candidates:
+        candidate = _file_input(categories_root / filename)
+        if candidate:
+            return candidate
+    return None

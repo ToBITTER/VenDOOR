@@ -18,11 +18,13 @@ Keep filenames lowercase with underscores.
 ## 3) Category Hero Images
 - IPADS: assets/brand/categories/ipads.png
 - IPODS: assets/brand/categories/ipods.png
+- WIGS: assets/brand/categories/wigs.png
 - ACCESSORIES_BAGS: assets/brand/categories/accessories_bags.png
 - ACCESSORIES_JEWELRY: assets/brand/categories/accessories_jewelry.png
 - ACCESSORIES_WATCHES: assets/brand/categories/accessories_watches.png
 - CLOTHES: assets/brand/categories/clothes.png
-- ELECTRONICS (displayed as Laptop): assets/brand/categories/laptop.png
+- ELECTRONICS (displayed as Gadgets/Laptop): assets/brand/categories/gadgets.png
+- ELECTRONICS fallback: assets/brand/categories/laptop.png
 - SKINCARE: assets/brand/categories/skincare.png
 - BOOKS: assets/brand/categories/books.png
 - SHOES: assets/brand/categories/shoes.png
