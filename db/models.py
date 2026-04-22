@@ -26,6 +26,7 @@ class Category(str, PyEnum):
     IPADS = "IPADS"
     IPODS = "IPODS"
     WIGS = "WIGS"
+    OTHERGADGETS = "OTHERGADGETS"
     JEWELRY = "JEWELRY"
     CLOTHES = "CLOTHES"
     ELECTRONICS = "ELECTRONICS"

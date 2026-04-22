@@ -63,6 +63,7 @@ def get_catalog_categories() -> InlineKeyboardMarkup:
         ("iPads", "browse_cat_IPADS"),
         ("iPods", "browse_cat_IPODS"),
         ("Wigs", "browse_cat_WIGS"),
+        ("Other Gadgets", "browse_cat_OTHERGADGETS"),
         ("Accessories", "browse_cat_JEWELRY"),
         ("Clothes", "browse_cat_CLOTHES"),
         ("Laptop", "browse_cat_ELECTRONICS"),

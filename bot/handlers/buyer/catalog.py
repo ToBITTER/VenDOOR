@@ -53,6 +53,8 @@ def format_category_label(category: Category, accessory_subcategory: AccessorySu
         return "Laptop"
     if category == Category.WIGS:
         return "Wigs"
+    if category == Category.OTHERGADGETS:
+        return "Other Gadgets"
     if category == Category.SKINCARE:
         return "Skincare & Perfumes"
     return category.value.title()

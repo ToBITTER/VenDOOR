@@ -30,6 +30,8 @@ def format_category_label(category: Category, accessory_subcategory: AccessorySu
         return "Laptop"
     if category == Category.WIGS:
         return "Wigs"
+    if category == Category.OTHERGADGETS:
+        return "Other Gadgets"
     if category == Category.SKINCARE:
         return "Skincare & Perfumes"
     return category.value.title()
@@ -265,6 +267,7 @@ async def handle_listing_image(message: Message, state: FSMContext):
         ("iPads", "cat_IPADS"),
         ("iPods", "cat_IPODS"),
         ("Wigs", "cat_WIGS"),
+        ("Other Gadgets", "cat_OTHERGADGETS"),
         ("Accessories", "cat_JEWELRY"),
         ("Clothes", "cat_CLOTHES"),
         ("Laptop", "cat_ELECTRONICS"),

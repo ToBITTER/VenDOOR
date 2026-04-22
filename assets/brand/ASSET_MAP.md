@@ -19,6 +19,7 @@ Keep filenames lowercase with underscores.
 - IPADS: assets/brand/categories/ipads.png
 - IPODS: assets/brand/categories/ipods.png
 - WIGS: assets/brand/categories/wigs.png
+- OTHER_GADGETS: assets/brand/categories/other_gadgets.png
 - ACCESSORIES_BAGS: assets/brand/categories/accessories_bags.png
 - ACCESSORIES_JEWELRY: assets/brand/categories/accessories_jewelry.png
 - ACCESSORIES_WATCHES: assets/brand/categories/accessories_watches.png

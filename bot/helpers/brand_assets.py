@@ -72,6 +72,13 @@ def get_category_hero(category_name: str, accessory_subcategory_name: str | None
         "IPADS": ["ipads.png"],
         "IPODS": ["ipods.png"],
         "WIGS": ["wigs.png", "wigs.jpg", "wigs.jpeg", "wigs.webp"],
+        "OTHERGADGETS": [
+            "other_gadgets.png",
+            "other_gadgets.jpg",
+            "other_gadgets.jpeg",
+            "other_gadgets.webp",
+            "gadgets.png",
+        ],
         "CLOTHES": ["clothes.png"],
         # Electronics is displayed as Laptop in UI. Prefer gadgets hero if provided.
         "ELECTRONICS": ["gadgets.png", "gadgets.jpg", "gadgets.jpeg", "gadgets.webp", "laptop.png"],
