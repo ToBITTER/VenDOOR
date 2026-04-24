@@ -5,7 +5,7 @@ Displays welcome message and main menu.
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -115,9 +115,6 @@ async def start_handler(message: Message, session: AsyncSession):
         await session.commit()
 
     menu_keyboard = await _main_menu_for_user(message.from_user.id, session)
-    # Force-clear legacy reply keyboards from older bot versions.
-    await message.answer("Main menu refreshed.", reply_markup=ReplyKeyboardRemove())
-
     welcome_banner = get_welcome_banner()
     if welcome_banner:
         await message.answer_photo(
@@ -136,9 +133,8 @@ async def start_handler(message: Message, session: AsyncSession):
 
 @router.message(Command("menu"))
 async def menu_command_handler(message: Message, session: AsyncSession):
-    # Remove stale reply keyboards from older bot states and render inline menu.
+    # Render inline menu.
     menu_keyboard = await _main_menu_for_user(message.from_user.id, session)
-    await message.answer("Main menu refreshed.", reply_markup=ReplyKeyboardRemove())
     menu_text = "<b>VenDOOR</b>"
     main_menu_banner = get_main_menu_banner()
     if main_menu_banner:
