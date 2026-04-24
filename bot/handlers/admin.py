@@ -109,10 +109,10 @@ def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
 def _pending_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Refresh", callback_data="admin_pending_refresh")],
+            [InlineKeyboardButton(text="Refresh Queue", callback_data="admin_pending_refresh")],
             [InlineKeyboardButton(text="Back to Moderation", callback_data="admin_group_moderation")],
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
-            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -121,10 +121,10 @@ def _actions_keyboard(seller_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Approve", callback_data=f"admin_approve_{seller_id}"),
-                InlineKeyboardButton(text="Reject", callback_data=f"admin_reject_{seller_id}"),
+                InlineKeyboardButton(text="Approve Seller", callback_data=f"admin_approve_{seller_id}"),
+                InlineKeyboardButton(text="Reject Seller", callback_data=f"admin_reject_{seller_id}"),
             ],
-            [InlineKeyboardButton(text="Back to Pending", callback_data="admin_pending_refresh")],
+            [InlineKeyboardButton(text="Back to Approval Queue", callback_data="admin_pending_refresh")],
         ]
     )
 
@@ -132,17 +132,17 @@ def _actions_keyboard(seller_id: int) -> InlineKeyboardMarkup:
 def _admin_tools_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Overview", callback_data="admin_group_overview")],
+            [InlineKeyboardButton(text="Overview & Health", callback_data="admin_group_overview")],
             [
-                InlineKeyboardButton(text="Commerce", callback_data="admin_group_commerce"),
-                InlineKeyboardButton(text="Delivery", callback_data="admin_group_delivery"),
+                InlineKeyboardButton(text="Commerce Operations", callback_data="admin_group_commerce"),
+                InlineKeyboardButton(text="Delivery Operations", callback_data="admin_group_delivery"),
             ],
             [
-                InlineKeyboardButton(text="Moderation", callback_data="admin_group_moderation"),
-                InlineKeyboardButton(text="System", callback_data="admin_group_system"),
+                InlineKeyboardButton(text="Moderation & Risk", callback_data="admin_group_moderation"),
+                InlineKeyboardButton(text="System & Access", callback_data="admin_group_system"),
             ],
             [InlineKeyboardButton(text="Danger Zone", callback_data="admin_danger_tools")],
-            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -151,11 +151,11 @@ def _admin_group_overview_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Stats", callback_data="admin_stats"),
+                InlineKeyboardButton(text="Platform Stats", callback_data="admin_stats"),
                 InlineKeyboardButton(text="Flow Health", callback_data="admin_flow_health"),
             ],
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
-            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -165,15 +165,15 @@ def _admin_group_commerce_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="Transactions", callback_data="admin_transactions"),
-                InlineKeyboardButton(text="Tx Logs", callback_data="admin_transaction_logs"),
+                InlineKeyboardButton(text="Transaction Logs", callback_data="admin_transaction_logs"),
             ],
             [
-                InlineKeyboardButton(text="Payouts", callback_data="admin_payouts"),
-                InlineKeyboardButton(text="Listings", callback_data="admin_listings"),
+                InlineKeyboardButton(text="Payout Monitor", callback_data="admin_payouts"),
+                InlineKeyboardButton(text="Listings Catalog", callback_data="admin_listings"),
             ],
             [InlineKeyboardButton(text="Vendors", callback_data="admin_vendors")],
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
-            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -182,16 +182,16 @@ def _admin_group_delivery_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Track Deliveries", callback_data="admin_delivery_tracking"),
-                InlineKeyboardButton(text="Assign Delivery", callback_data="admin_delivery_assign_picker"),
+                InlineKeyboardButton(text="Delivery Tracker", callback_data="admin_delivery_tracking"),
+                InlineKeyboardButton(text="Assignment Queue", callback_data="admin_delivery_assign_picker"),
             ],
             [
-                InlineKeyboardButton(text="Delivery Agents", callback_data="admin_delivery_agents"),
-                InlineKeyboardButton(text="Add Agent", callback_data="admin_delivery_agent_add"),
+                InlineKeyboardButton(text="Agents", callback_data="admin_delivery_agents"),
+                InlineKeyboardButton(text="Register Agent", callback_data="admin_delivery_agent_add"),
             ],
             [InlineKeyboardButton(text="Delivery Logs", callback_data="admin_transaction_logs")],
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
-            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -200,12 +200,12 @@ def _admin_group_moderation_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Pending Sellers", callback_data="admin_pending_refresh"),
+                InlineKeyboardButton(text="Seller Approvals", callback_data="admin_pending_refresh"),
                 InlineKeyboardButton(text="Complaints + IP", callback_data="admin_complaints_ip"),
             ],
             [InlineKeyboardButton(text="Vendor Privileges", callback_data="admin_privileges_help")],
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
-            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -214,11 +214,11 @@ def _admin_group_system_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Broadcast", callback_data="admin_broadcast_help"),
-                InlineKeyboardButton(text="Ops Admins", callback_data="admin_ops_admins"),
+                InlineKeyboardButton(text="Broadcast Center", callback_data="admin_broadcast_help"),
+                InlineKeyboardButton(text="Ops Admin Access", callback_data="admin_ops_admins"),
             ],
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
-            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -227,16 +227,16 @@ def _admin_transaction_logs_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Successful", callback_data="admin_txlog_success"),
-                InlineKeyboardButton(text="Failed", callback_data="admin_txlog_failed"),
+                InlineKeyboardButton(text="Successful Payments", callback_data="admin_txlog_success"),
+                InlineKeyboardButton(text="Failed Transactions", callback_data="admin_txlog_failed"),
             ],
             [
-                InlineKeyboardButton(text="Delivered", callback_data="admin_txlog_delivered"),
+                InlineKeyboardButton(text="Delivered Orders", callback_data="admin_txlog_delivered"),
                 InlineKeyboardButton(text="Awaiting Delivery", callback_data="admin_txlog_awaiting"),
             ],
             [InlineKeyboardButton(text="Back to Commerce", callback_data="admin_group_commerce")],
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
-            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -244,12 +244,12 @@ def _admin_transaction_logs_keyboard() -> InlineKeyboardMarkup:
 def _danger_tools_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Delete Listing", callback_data="admin_delete_help_listing")],
-            [InlineKeyboardButton(text="Delete Vendor", callback_data="admin_delete_help_vendor")],
-            [InlineKeyboardButton(text="Delete User", callback_data="admin_delete_help_user")],
+            [InlineKeyboardButton(text="Delete Listing Record", callback_data="admin_delete_help_listing")],
+            [InlineKeyboardButton(text="Delete Vendor Profile", callback_data="admin_delete_help_vendor")],
+            [InlineKeyboardButton(text="Delete User Account", callback_data="admin_delete_help_user")],
             [InlineKeyboardButton(text="Clear Transactions + Listings", callback_data="admin_wipe_marketplace_confirm")],
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
-            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -257,16 +257,16 @@ def _danger_tools_keyboard() -> InlineKeyboardMarkup:
 def _delete_help_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
-            [InlineKeyboardButton(text="Back", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
 
 def _delete_picker_keyboard(items: list[tuple[str, str]]) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=label, callback_data=cb)] for label, cb in items]
-    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
-    rows.append([InlineKeyboardButton(text="Back", callback_data="back_to_menu")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")])
+    rows.append([InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -282,7 +282,7 @@ def _wipe_marketplace_confirm_keyboard() -> InlineKeyboardMarkup:
 def _wipe_marketplace_done_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
             [InlineKeyboardButton(text="Back to Danger Zone", callback_data="admin_danger_tools")],
         ]
     )
@@ -387,7 +387,8 @@ def _broadcast_audience_keyboard() -> InlineKeyboardMarkup:
                     callback_data="admin_broadcast_audience_verified_sellers",
                 )
             ],
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to System", callback_data="admin_group_system")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
         ]
     )
 
@@ -397,7 +398,8 @@ def _privilege_featured_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Featured: ON", callback_data="admin_priv_featured_1")],
             [InlineKeyboardButton(text="Featured: OFF", callback_data="admin_priv_featured_0")],
-            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Moderation", callback_data="admin_group_moderation")],
+            [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
         ]
     )
 
@@ -803,10 +805,10 @@ def _complaints_dashboard_keyboard(complaints: list[Complaint]) -> InlineKeyboar
                 ]
             )
 
-    rows.append([InlineKeyboardButton(text="Refresh", callback_data="admin_complaints_ip")])
+    rows.append([InlineKeyboardButton(text="Refresh Complaints", callback_data="admin_complaints_ip")])
     rows.append([InlineKeyboardButton(text="Back to Moderation", callback_data="admin_group_moderation")])
-    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
-    rows.append([InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")])
+    rows.append([InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -825,7 +827,7 @@ def _complaint_detail_keyboard(complaint_id: int) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="Set Closed",
+                    text="Mark Closed",
                     callback_data=f"admin_complaint_set_{complaint_id}_C",
                 )
             ],
@@ -856,10 +858,10 @@ async def _payouts_keyboard(session: AsyncSession) -> InlineKeyboardMarkup:
             ]
         )
 
-    rows.append([InlineKeyboardButton(text="Refresh", callback_data="admin_payouts")])
+    rows.append([InlineKeyboardButton(text="Refresh Payouts", callback_data="admin_payouts")])
     rows.append([InlineKeyboardButton(text="Back to Commerce", callback_data="admin_group_commerce")])
-    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
-    rows.append([InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")])
+    rows.append([InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -954,7 +956,7 @@ async def _render_ops_admins_text(session: AsyncSession, limit: int = 50) -> str
         select(AdminUser).order_by(AdminUser.created_at.desc()).limit(limit)
     )
     admins = result.scalars().all()
-    text = "<b>Ops Admins</b>\n\n"
+    text = "<b>Ops Admin Access</b>\n\n"
     if not admins:
         text += "No ops admins added yet.\n"
     else:
@@ -982,7 +984,7 @@ def _ops_admins_keyboard(admins: list[AdminUser]) -> InlineKeyboardMarkup:
                 ]
             )
     rows.append([InlineKeyboardButton(text="Back to System", callback_data="admin_group_system")])
-    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -992,14 +994,14 @@ def _delivery_assign_pick_keyboard(deliveries: list[Delivery]) -> InlineKeyboard
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"Assign Delivery #{delivery.id}",
+                    text=f"Assign Job #{delivery.id}",
                     callback_data=f"admin_delivery_assign_{delivery.id}",
                 )
             ]
         )
-    rows.append([InlineKeyboardButton(text="Track Deliveries", callback_data="admin_delivery_tracking")])
+    rows.append([InlineKeyboardButton(text="Open Delivery Tracker", callback_data="admin_delivery_tracking")])
     rows.append([InlineKeyboardButton(text="Back to Delivery", callback_data="admin_group_delivery")])
-    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1016,7 +1018,7 @@ def _delivery_assign_agent_keyboard(delivery_id: int, agents: list[DeliveryAgent
         )
     rows.append([InlineKeyboardButton(text="Back to Assign Delivery", callback_data="admin_delivery_assign_picker")])
     rows.append([InlineKeyboardButton(text="Back to Delivery", callback_data="admin_group_delivery")])
-    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1041,9 +1043,9 @@ def _delivery_agents_keyboard(agents: list[DeliveryAgent]) -> InlineKeyboardMark
                     )
                 ]
             )
-    rows.append([InlineKeyboardButton(text="Refresh", callback_data="admin_delivery_agents")])
+    rows.append([InlineKeyboardButton(text="Refresh Agents", callback_data="admin_delivery_agents")])
     rows.append([InlineKeyboardButton(text="Back to Delivery", callback_data="admin_group_delivery")])
-    rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
+    rows.append([InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1119,12 +1121,12 @@ async def admin_tools(message: Message, state: FSMContext, session: AsyncSession
     text = (
         "<b>Admin Tools</b>\n\n"
         "Use grouped sections for faster navigation:\n"
-        "- Overview\n"
-        "- Commerce\n"
-        "- Delivery\n"
-        "- Moderation\n"
-        "- System\n\n"
-        "Transaction logs now include:\n"
+        "- Overview & Health\n"
+        "- Commerce Operations\n"
+        "- Delivery Operations\n"
+        "- Moderation & Risk\n"
+        "- System & Access\n\n"
+        "Transaction log filters:\n"
         "- Successful\n"
         "- Failed\n"
         "- Delivered\n"
@@ -1397,11 +1399,11 @@ async def open_admin_tools(callback: CallbackQuery, state: FSMContext, session: 
     text = (
         "<b>Admin Tools</b>\n\n"
         "Tools are grouped for easier navigation:\n"
-        "- Overview\n"
-        "- Commerce\n"
-        "- Delivery\n"
-        "- Moderation\n"
-        "- System\n\n"
+        "- Overview & Health\n"
+        "- Commerce Operations\n"
+        "- Delivery Operations\n"
+        "- Moderation & Risk\n"
+        "- System & Access\n\n"
         "Open Commerce or Delivery to view transaction logs:\n"
         "- Successful\n"
         "- Failed\n"
@@ -1425,7 +1427,7 @@ async def admin_group_overview(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
     await safe_replace_with_screen(
         callback,
-        "<b>Overview</b>\n\nPlatform snapshot and flow reliability tools.",
+        "<b>Overview & Health</b>\n\nPlatform snapshot and flow reliability tools.",
         parse_mode="HTML",
         reply_markup=_admin_group_overview_keyboard(),
     )
@@ -1440,9 +1442,9 @@ async def admin_group_commerce(callback: CallbackQuery, session: AsyncSession):
     await safe_replace_with_screen(
         callback,
         (
-            "<b>Commerce</b>\n\n"
+            "<b>Commerce Operations</b>\n\n"
             "Transactions, payouts, vendors, listings, and transaction logs.\n"
-            "Use Tx Logs for successful, failed, delivered, and awaiting-delivery views."
+            "Use Transaction Logs for successful, failed, delivered, and awaiting-delivery views."
         ),
         parse_mode="HTML",
         reply_markup=_admin_group_commerce_keyboard(),
@@ -1457,7 +1459,7 @@ async def admin_group_delivery(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
     await safe_replace_with_screen(
         callback,
-        "<b>Delivery</b>\n\nTrack jobs, assign agents, and review delivery-focused logs.",
+        "<b>Delivery Operations</b>\n\nTrack jobs, assign agents, and review delivery-focused logs.",
         parse_mode="HTML",
         reply_markup=_admin_group_delivery_keyboard(),
     )
@@ -1471,7 +1473,7 @@ async def admin_group_moderation(callback: CallbackQuery, session: AsyncSession)
     await safe_answer_callback(callback)
     await safe_replace_with_screen(
         callback,
-        "<b>Moderation</b>\n\nSeller approvals, complaints, and vendor privileges.",
+        "<b>Moderation & Risk</b>\n\nSeller approvals, complaints, and vendor privileges.",
         parse_mode="HTML",
         reply_markup=_admin_group_moderation_keyboard(),
     )
@@ -1485,7 +1487,7 @@ async def admin_group_system(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
     await safe_replace_with_screen(
         callback,
-        "<b>System</b>\n\nBroadcast communications and ops-admin access control.",
+        "<b>System & Access</b>\n\nBroadcast communications and ops-admin access control.",
         parse_mode="HTML",
         reply_markup=_admin_group_system_keyboard(),
     )
@@ -2210,14 +2212,14 @@ async def admin_delivery_assign_picker(callback: CallbackQuery, session: AsyncSe
     if not deliveries:
         await safe_replace_with_screen(
             callback,
-            "<b>Assign Delivery</b>\n\nNo deliveries available for assignment.",
+            "<b>Assignment Queue</b>\n\nNo deliveries available for assignment.",
             parse_mode="HTML",
-            reply_markup=_admin_tools_keyboard(),
+            reply_markup=_admin_group_delivery_keyboard(),
         )
         return
     await safe_replace_with_screen(
         callback,
-        "<b>Assign Delivery</b>\n\nSelect a pending delivery job to assign.",
+        "<b>Assignment Queue</b>\n\nSelect a pending delivery job to assign.",
         parse_mode="HTML",
         reply_markup=_delivery_assign_pick_keyboard(deliveries),
     )
