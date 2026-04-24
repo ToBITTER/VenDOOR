@@ -38,6 +38,19 @@ class ComplaintStates(StatesGroup):
     confirming_complaint = State()
 
 
+def _complaint_reason_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Item Not Received", callback_data="complaint_reason_not_received")],
+            [InlineKeyboardButton(text="Wrong Item / Mismatch", callback_data="complaint_reason_mismatch")],
+            [InlineKeyboardButton(text="Item Damaged", callback_data="complaint_reason_damaged")],
+            [InlineKeyboardButton(text="Seller Unresponsive", callback_data="complaint_reason_unresponsive")],
+            [InlineKeyboardButton(text="Type My Own Reason", callback_data="complaint_reason_custom")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
 @router.callback_query(F.data == "complaints")
 async def start_complaint(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
     user_id_str = str(callback.from_user.id)
@@ -75,7 +88,12 @@ async def start_complaint(callback: CallbackQuery, state: FSMContext, session: A
             callback,
             empty_text,
             photo=empty_image,
-            reply_markup=get_main_menu_inline(),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Browse Marketplace", callback_data="browse_catalog")],
+                    [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
+                ]
+            ),
         )
         return
 
@@ -89,12 +107,12 @@ async def start_complaint(callback: CallbackQuery, state: FSMContext, session: A
             ]
             for order in orders[:5]
         ]
-        + [[InlineKeyboardButton(text="Cancel", callback_data="back_to_menu")]]
+        + [[InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")]]
     )
 
     await safe_replace_with_screen(
         callback,
-        "<b>File a Complaint</b>\n\nSelect an order to file a complaint about:",
+        "<b>Report an Issue</b>\n\nSelect an order:",
         parse_mode="HTML",
         reply_markup=keyboard,
     )
@@ -157,14 +175,9 @@ async def start_complaint_from_order(callback: CallbackQuery, state: FSMContext,
     await safe_replace_with_screen(
         callback,
         f"Order #{order.id} - {order.listing.title if order.listing else 'Unknown item'}\n\n"
-        "What is the issue?\n\n"
-        "Examples:\n"
-        "- Non-receipt of item\n"
-        "- Item does not match description\n"
-        "- Item is damaged\n"
-        "- Seller is unresponsive\n\n"
-        "Please describe the issue:",
+        "<b>Select a reason</b> or type your own.",
         parse_mode="HTML",
+        reply_markup=_complaint_reason_keyboard(),
     )
     await state.set_state(ComplaintStates.awaiting_subject)
 
@@ -191,16 +204,47 @@ async def select_complaint_order(callback: CallbackQuery, state: FSMContext, ses
     await safe_replace_with_screen(
         callback,
         f"Order #{order.id} - {order.listing.title}\n\n"
-        "What is the issue?\n\n"
-        "Examples:\n"
-        "- Non-receipt of item\n"
-        "- Item does not match description\n"
-        "- Item is damaged\n"
-        "- Seller is unresponsive\n\n"
-        "Please describe the issue:",
+        "<b>Select a reason</b> or type your own.",
         parse_mode="HTML",
+        reply_markup=_complaint_reason_keyboard(),
     )
     await state.set_state(ComplaintStates.awaiting_subject)
+
+
+@router.callback_query(
+    F.data.startswith("complaint_reason_"),
+    StateFilter(ComplaintStates.awaiting_subject),
+)
+async def select_complaint_reason(callback: CallbackQuery, state: FSMContext):
+    payload = (callback.data or "").replace("complaint_reason_", "", 1).strip().lower()
+    if payload == "custom":
+        await safe_answer_callback(callback)
+        await safe_replace_with_screen(
+            callback,
+            "<b>Issue Subject</b>\n\nPlease type a short subject for your issue.",
+            parse_mode="HTML",
+        )
+        return
+
+    reason_map = {
+        "not_received": "Item not received",
+        "mismatch": "Wrong item / does not match description",
+        "damaged": "Item damaged",
+        "unresponsive": "Seller unresponsive",
+    }
+    subject = reason_map.get(payload)
+    if not subject:
+        await safe_answer_callback(callback, text="Invalid reason selected.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    await state.update_data(subject=subject)
+    await safe_replace_with_screen(
+        callback,
+        "<b>Complaint Details</b>\n\nPlease provide full details of what happened.",
+        parse_mode="HTML",
+    )
+    await state.set_state(ComplaintStates.awaiting_description)
 
 
 @router.message(ComplaintStates.awaiting_subject)
@@ -273,7 +317,7 @@ async def show_complaint_confirmation(message: Message, state: FSMContext):
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="Submit", callback_data="complaint_submit"),
-                InlineKeyboardButton(text="Cancel", callback_data="back_to_menu"),
+                InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu"),
             ]
         ]
     )
@@ -319,7 +363,12 @@ async def submit_complaint(callback: CallbackQuery, state: FSMContext, session: 
             "We will notify you about the resolution.\n\n"
             f"Complaint ID: {complaint.id}",
             parse_mode="HTML",
-            reply_markup=get_main_menu_inline(),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="View My Orders", callback_data="my_orders")],
+                    [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
+                ]
+            ),
         )
 
     except Exception:

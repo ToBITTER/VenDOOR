@@ -31,7 +31,7 @@ def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
 def _cart_actions_keyboard(cart_item_ids: list[int]) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=f"Remove item #{item_id}", callback_data=f"cart_remove_{item_id}")] for item_id in cart_item_ids]
     rows.append([InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")])
-    rows.append([InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")])
+    rows.append([InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -41,6 +41,15 @@ def _post_add_to_cart_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")],
             [InlineKeyboardButton(text="View Cart", callback_data="my_cart")],
             [InlineKeyboardButton(text="Continue Shopping", callback_data="browse_catalog")],
+        ]
+    )
+
+
+def _empty_cart_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Browse Marketplace", callback_data="browse_catalog")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -107,8 +116,9 @@ async def my_cart(callback: CallbackQuery, session: AsyncSession):
     if not items:
         await safe_replace_with_screen(
             callback,
-            "Your cart is empty.\n\nBrowse catalog and add items.",
-            reply_markup=get_main_menu_inline(),
+            "<b>Your Cart</b>\n\nYour cart is empty.\n\nAdd products to continue checkout.",
+            parse_mode="HTML",
+            reply_markup=_empty_cart_keyboard(),
         )
         return
 

@@ -146,11 +146,20 @@ def _group_confirm_keyboard(orders: list[Order]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _empty_orders_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Browse Marketplace", callback_data="browse_catalog")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
 def _delivery_group_actions_keyboard(delivery_id: int, fallback_order_id: int, can_confirm: bool) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text="Track Delivery", callback_data=f"order_track_{fallback_order_id}")]]
     if can_confirm:
         rows.append([InlineKeyboardButton(text="Confirm Receipt", callback_data=f"order_confirm_group_{delivery_id}")])
-    rows.append([InlineKeyboardButton(text="Raise Dispute", callback_data=f"order_dispute_{fallback_order_id}")])
+    rows.append([InlineKeyboardButton(text="Report Issue", callback_data=f"order_dispute_{fallback_order_id}")])
     rows.append([InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -159,7 +168,7 @@ def _cart_group_actions_keyboard(fallback_order_id: int, can_retry: bool) -> Inl
     rows = [[InlineKeyboardButton(text="Track Delivery", callback_data=f"order_track_{fallback_order_id}")]]
     if can_retry:
         rows.append([InlineKeyboardButton(text="Re-attempt Payment", callback_data=f"order_retry_group_{fallback_order_id}")])
-    rows.append([InlineKeyboardButton(text="Raise Dispute", callback_data=f"order_dispute_{fallback_order_id}")])
+    rows.append([InlineKeyboardButton(text="Report Issue", callback_data=f"order_dispute_{fallback_order_id}")])
     rows.append([InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -170,7 +179,7 @@ def _single_order_actions_keyboard(order: Order) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="Re-attempt Payment", callback_data=f"order_retry_payment_{order.id}")])
     else:
         rows.append([InlineKeyboardButton(text="Confirm Receipt", callback_data=f"order_confirm_{order.id}")])
-    rows.append([InlineKeyboardButton(text="Raise Dispute", callback_data=f"order_dispute_{order.id}")])
+    rows.append([InlineKeyboardButton(text="Report Issue", callback_data=f"order_dispute_{order.id}")])
     rows.append([InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -279,7 +288,7 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
             callback,
             empty_text,
             photo=empty_image,
-            reply_markup=get_main_menu_inline(),
+            reply_markup=_empty_orders_keyboard(),
         )
         return
 
@@ -359,7 +368,7 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
                 ]
                 for group in grouped_orders[:5]
             ]
-            + [[InlineKeyboardButton(text="Back", callback_data="back_to_menu")]]
+            + [[InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")]]
         )
     )
 

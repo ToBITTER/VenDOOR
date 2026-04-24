@@ -20,9 +20,29 @@ MENU_HELP = "Support"
 MENU_TERMS = "Terms & Policies"
 
 
-def get_main_menu_inline() -> InlineKeyboardMarkup:
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
+def get_main_menu_inline(seller_first: bool = False) -> InlineKeyboardMarkup:
+    if seller_first:
+        rows = [
+            [
+                InlineKeyboardButton(text=MENU_LISTINGS, callback_data="seller_listings"),
+                InlineKeyboardButton(text=MENU_DELIVERY, callback_data="delivery_hub"),
+            ],
+            [
+                InlineKeyboardButton(text=MENU_BROWSE, callback_data="browse_catalog"),
+                InlineKeyboardButton(text=MENU_ORDERS, callback_data="my_orders"),
+            ],
+            [
+                InlineKeyboardButton(text=MENU_CART, callback_data="my_cart"),
+                InlineKeyboardButton(text=MENU_SELLER, callback_data="seller_register"),
+            ],
+            [
+                InlineKeyboardButton(text=MENU_COMPLAINTS, callback_data="complaints"),
+                InlineKeyboardButton(text=MENU_HELP, callback_data="support_hub"),
+            ],
+            [InlineKeyboardButton(text=MENU_TERMS, callback_data="terms_conditions")],
+        ]
+    else:
+        rows = [
             [
                 InlineKeyboardButton(text=MENU_BROWSE, callback_data="browse_catalog"),
                 InlineKeyboardButton(text=MENU_CART, callback_data="my_cart"),
@@ -37,26 +57,46 @@ def get_main_menu_inline() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text=MENU_COMPLAINTS, callback_data="complaints"),
-                InlineKeyboardButton(text=MENU_HELP, callback_data="help"),
+                InlineKeyboardButton(text=MENU_HELP, callback_data="support_hub"),
             ],
             [InlineKeyboardButton(text=MENU_TERMS, callback_data="terms_conditions")],
         ]
-    )
-    return keyboard
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_main_menu_reply() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
+def get_main_menu_reply(seller_first: bool = False) -> ReplyKeyboardMarkup:
+    if seller_first:
+        rows = [
+            [KeyboardButton(text=MENU_LISTINGS), KeyboardButton(text=MENU_DELIVERY)],
+            [KeyboardButton(text=MENU_BROWSE), KeyboardButton(text=MENU_ORDERS)],
+            [KeyboardButton(text=MENU_CART), KeyboardButton(text=MENU_SELLER)],
+            [KeyboardButton(text=MENU_COMPLAINTS), KeyboardButton(text=MENU_HELP)],
+            [KeyboardButton(text=MENU_TERMS)],
+        ]
+    else:
+        rows = [
             [KeyboardButton(text=MENU_BROWSE), KeyboardButton(text=MENU_CART)],
             [KeyboardButton(text=MENU_ORDERS), KeyboardButton(text=MENU_DELIVERY)],
             [KeyboardButton(text=MENU_SELLER), KeyboardButton(text=MENU_LISTINGS)],
             [KeyboardButton(text=MENU_COMPLAINTS), KeyboardButton(text=MENU_HELP)],
             [KeyboardButton(text=MENU_TERMS)],
-        ],
+        ]
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
         resize_keyboard=True,
         is_persistent=True,
         input_field_placeholder="",
+    )
+
+
+def get_support_hub_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="How VenDOOR Works", callback_data="support_how_it_works")],
+            [InlineKeyboardButton(text="Contact Support", callback_data="support_contact")],
+            [InlineKeyboardButton(text="Report an Issue", callback_data="complaints")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
+        ]
     )
 
 
@@ -91,7 +131,7 @@ def get_order_actions(order_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Track Delivery", callback_data=f"order_track_{order_id}")],
             [InlineKeyboardButton(text="Confirm Receipt", callback_data=f"order_confirm_{order_id}")],
-            [InlineKeyboardButton(text="Raise Dispute", callback_data=f"order_dispute_{order_id}")],
+            [InlineKeyboardButton(text="Report Issue", callback_data=f"order_dispute_{order_id}")],
             [InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")],
         ]
     )

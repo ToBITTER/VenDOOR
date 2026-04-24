@@ -335,7 +335,7 @@ async def handle_delivery_details(message: Message, state: FSMContext, session: 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Proceed to Payment", callback_data="proceed_payment")],
-            [InlineKeyboardButton(text="Cancel", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
 
@@ -461,13 +461,14 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
                     "<b>Cart Checkout Started</b>\n\n"
                     f"Created {order_count} order(s) across your cart.\n"
                     f"<b>Total Payment:</b> NGN {total_amount:,.2f}\n\n"
-                    "Use the button below to pay once."
+                    "Complete payment once for all items."
                 ),
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
                         [InlineKeyboardButton(text="Pay Cart Now", url=korapay_ref.checkout_url)],
-                        [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+                        [InlineKeyboardButton(text="View My Orders", callback_data="my_orders")],
+                        [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
                     ]
                 ),
             )
@@ -550,6 +551,8 @@ async def proceed_to_payment(callback: CallbackQuery, state: FSMContext, session
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
                         [InlineKeyboardButton(text="Pay Now", url=korapay_ref.checkout_url)],
+                        [InlineKeyboardButton(text="View My Orders", callback_data="my_orders")],
+                        [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
                     ]
                 )
 

@@ -5,7 +5,7 @@ Displays welcome message and main menu.
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,8 +27,9 @@ from bot.keyboards.main_menu import (
     MENU_SELLER,
     MENU_TERMS,
     get_main_menu_inline,
+    get_support_hub_keyboard,
 )
-from db.models import User
+from db.models import SellerProfile, User
 
 router = Router()
 
@@ -72,6 +73,29 @@ HELP_TEXT = (
     "Raise a complaint from your orders and our team will review it."
 )
 
+SUPPORT_CONTACT_TEXT = (
+    "<b>Contact Support</b>\n\n"
+    "For order-related issues, tap <b>Report an Issue</b>.\n"
+    "For general help, use one of these channels:\n"
+    "- Telegram: @vendoor_support\n"
+    "- Email: support@vendoor.app\n\n"
+    "When contacting support, include your Order ID for faster help."
+)
+
+
+async def _is_seller_user(telegram_user_id: int, session: AsyncSession) -> bool:
+    result = await session.execute(
+        select(SellerProfile.id)
+        .join(User, SellerProfile.user_id == User.id)
+        .where(User.telegram_id == str(telegram_user_id))
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def _main_menu_for_user(telegram_user_id: int, session: AsyncSession) -> InlineKeyboardMarkup:
+    return get_main_menu_inline(seller_first=await _is_seller_user(telegram_user_id, session))
+
 
 @router.message(CommandStart())
 async def start_handler(message: Message, session: AsyncSession):
@@ -90,6 +114,7 @@ async def start_handler(message: Message, session: AsyncSession):
         session.add(user)
         await session.commit()
 
+    menu_keyboard = await _main_menu_for_user(message.from_user.id, session)
     # Force-clear legacy reply keyboards from older bot versions.
     await message.answer("Main menu refreshed.", reply_markup=ReplyKeyboardRemove())
 
@@ -99,19 +124,20 @@ async def start_handler(message: Message, session: AsyncSession):
             photo=welcome_banner,
             caption="<b>Welcome to VenDOOR</b>",
             parse_mode="HTML",
-            reply_markup=get_main_menu_inline(),
+            reply_markup=menu_keyboard,
         )
     else:
         await message.answer(
             WELCOME_TEXT,
             parse_mode="HTML",
-            reply_markup=get_main_menu_inline(),
+            reply_markup=menu_keyboard,
         )
 
 
 @router.message(Command("menu"))
-async def menu_command_handler(message: Message):
+async def menu_command_handler(message: Message, session: AsyncSession):
     # Remove stale reply keyboards from older bot states and render inline menu.
+    menu_keyboard = await _main_menu_for_user(message.from_user.id, session)
     await message.answer("Main menu refreshed.", reply_markup=ReplyKeyboardRemove())
     menu_text = "<b>VenDOOR</b>"
     main_menu_banner = get_main_menu_banner()
@@ -120,40 +146,52 @@ async def menu_command_handler(message: Message):
             photo=main_menu_banner,
             caption=menu_text,
             parse_mode="HTML",
-            reply_markup=get_main_menu_inline(),
+            reply_markup=menu_keyboard,
         )
     else:
         await message.answer(
             menu_text,
             parse_mode="HTML",
-            reply_markup=get_main_menu_inline(),
+            reply_markup=menu_keyboard,
         )
 
 
 @router.message(Command("help"))
 async def help_command_handler(message: Message):
     await message.answer(
-        HELP_TEXT,
+        "<b>Support</b>\n\nChoose an option below:",
         parse_mode="HTML",
-        reply_markup=get_main_menu_inline(),
+        reply_markup=get_support_hub_keyboard(),
     )
 
 
 @router.callback_query(F.data == "back_to_menu")
-async def back_to_menu_handler(callback: CallbackQuery):
+async def back_to_menu_handler(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
     menu_text = "<b>VenDOOR</b>"
     main_menu_banner = get_main_menu_banner()
+    menu_keyboard = await _main_menu_for_user(callback.from_user.id, session)
     await safe_replace_with_screen(
         callback,
         menu_text,
         photo=main_menu_banner,
         parse_mode="HTML",
-        reply_markup=get_main_menu_inline(),
+        reply_markup=menu_keyboard,
     )
 
 
-@router.callback_query(F.data == "help")
+@router.callback_query(F.data == "support_hub")
+async def support_hub_handler(callback: CallbackQuery):
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        "<b>Support</b>\n\nChoose an option below:",
+        parse_mode="HTML",
+        reply_markup=get_support_hub_keyboard(),
+    )
+
+
+@router.callback_query(F.data.in_(["help", "support_how_it_works"]))
 async def help_handler(callback: CallbackQuery):
     await safe_answer_callback(callback)
     help_banner = get_help_banner()
@@ -162,12 +200,23 @@ async def help_handler(callback: CallbackQuery):
         HELP_TEXT,
         photo=help_banner,
         parse_mode="HTML",
-        reply_markup=get_main_menu_inline(),
+        reply_markup=get_support_hub_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "support_contact")
+async def support_contact_handler(callback: CallbackQuery):
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        SUPPORT_CONTACT_TEXT,
+        parse_mode="HTML",
+        reply_markup=get_support_hub_keyboard(),
     )
 
 
 @router.callback_query(F.data == "terms_conditions")
-async def terms_conditions_handler(callback: CallbackQuery):
+async def terms_conditions_handler(callback: CallbackQuery, session: AsyncSession):
     terms_text = (
         "<b>Terms & Conditions</b>\n\n"
         "<b>For Buyers</b>\n"
@@ -183,11 +232,12 @@ async def terms_conditions_handler(callback: CallbackQuery):
         "2. VenDOOR may update policies as the platform evolves."
     )
     await safe_answer_callback(callback)
+    menu_keyboard = await _main_menu_for_user(callback.from_user.id, session)
     await safe_replace_with_screen(
         callback,
         terms_text,
         parse_mode="HTML",
-        reply_markup=get_main_menu_inline(),
+        reply_markup=menu_keyboard,
     )
 
 
@@ -201,7 +251,7 @@ async def quick_menu_router(message: Message, session: AsyncSession, state: FSMC
         MENU_SELLER: "seller_register",
         MENU_LISTINGS: "seller_listings",
         MENU_COMPLAINTS: "complaints",
-        MENU_HELP: "help",
+        MENU_HELP: "support_hub",
         MENU_DELIVERY: "delivery_hub",
         MENU_TERMS: "terms_conditions",
     }
@@ -255,8 +305,8 @@ async def quick_menu_router(message: Message, session: AsyncSession, state: FSMC
 
         await complaint_handlers.start_complaint(proxy, state, session)
         return
-    if callback_data == "help":
-        await help_handler(proxy)
+    if callback_data == "support_hub":
+        await support_hub_handler(proxy)
         return
     if callback_data == "delivery_hub":
         from bot.handlers.seller import delivery_agent as delivery_agent_handlers
@@ -264,5 +314,5 @@ async def quick_menu_router(message: Message, session: AsyncSession, state: FSMC
         await delivery_agent_handlers.delivery_hub(proxy, session)
         return
     if callback_data == "terms_conditions":
-        await terms_conditions_handler(proxy)
+        await terms_conditions_handler(proxy, session)
         return

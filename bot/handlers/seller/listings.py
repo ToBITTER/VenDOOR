@@ -20,6 +20,34 @@ from db.models import AccessorySubcategory, Category, Listing, Order, OrderStatu
 router = Router()
 
 
+def _no_listings_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Create Listing", callback_data="seller_create_listing")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
+def _not_seller_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Start Selling", callback_data="seller_register")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
+def _listing_created_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Open Seller Dashboard", callback_data="seller_listings")],
+            [InlineKeyboardButton(text="Create Another Listing", callback_data="seller_create_listing")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
 def format_category_label(category: Category, accessory_subcategory: AccessorySubcategory | None = None) -> str:
     if category == Category.JEWELRY:
         base = "Accessories"
@@ -64,7 +92,7 @@ async def seller_stats(callback: CallbackQuery, session: AsyncSession):
         await safe_replace_with_screen(
             callback,
             "You are not registered as a seller.\n\nRegister now to start selling.",
-            reply_markup=get_main_menu_inline(),
+            reply_markup=_not_seller_keyboard(),
         )
         return
 
@@ -170,7 +198,7 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
         await safe_replace_with_screen(
             callback,
             "You have not created any listings yet.\n\nCreate your first listing now.",
-            reply_markup=get_seller_actions(),
+            reply_markup=_no_listings_keyboard(),
         )
         return
 
@@ -189,7 +217,7 @@ async def view_seller_listings(callback: CallbackQuery, session: AsyncSession):
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Create New Listing", callback_data="seller_create_listing")],
-            [InlineKeyboardButton(text="Back", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
     await safe_replace_with_screen(callback, text, parse_mode="HTML", reply_markup=keyboard)
@@ -393,7 +421,7 @@ async def handle_listing_price(message: Message, state: FSMContext):
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="Create", callback_data="listing_confirm"),
-                InlineKeyboardButton(text="Cancel", callback_data="back_to_menu"),
+                InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu"),
             ]
         ]
     )
@@ -429,7 +457,7 @@ async def confirm_listing_creation(callback: CallbackQuery, state: FSMContext, s
                 f"Quantity: {listing.quantity}"
             ),
             parse_mode="HTML",
-            reply_markup=get_seller_actions(),
+            reply_markup=_listing_created_keyboard(),
         )
     except Exception as e:
         await session.rollback()
