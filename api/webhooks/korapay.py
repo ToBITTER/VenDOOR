@@ -700,7 +700,60 @@ async def _handle_payment_failed(reference: str, session: AsyncSession, bot: Bot
         if not reference:
             return {"status": "error", "error": "missing_reference"}
 
-        # Find order
+        if reference.startswith("VENDOOR_CART_"):
+            order_ids = _extract_cart_reference_order_ids(reference)
+            if order_ids:
+                result = await session.execute(
+                    select(Order)
+                    .options(selectinload(Order.buyer))
+                    .where(Order.id.in_(order_ids))
+                    .with_for_update()
+                )
+            else:
+                result = await session.execute(
+                    select(Order)
+                    .options(selectinload(Order.buyer))
+                    .where(Order.transaction_ref.like(f"{reference}%"))
+                    .with_for_update()
+                )
+            cart_orders = result.scalars().all()
+            if not cart_orders:
+                return {"status": "error", "error": "Order not found"}
+
+            pending_orders = [order for order in cart_orders if order.status == OrderStatus.PENDING]
+            if not pending_orders:
+                return {
+                    "status": "ignored",
+                    "message": "No pending cart orders to cancel",
+                    "order_ids": [order.id for order in cart_orders],
+                }
+
+            for order in pending_orders:
+                order.status = OrderStatus.CANCELLED
+            await session.commit()
+
+            buyer = next((order.buyer for order in cart_orders if order.buyer), None)
+            if bot and buyer and buyer.telegram_id:
+                try:
+                    await bot.send_message(
+                        chat_id=int(buyer.telegram_id),
+                        text=(
+                            "<b>Payment Failed</b>\n\n"
+                            f"Cart payment was not completed. {len(pending_orders)} order(s) were cancelled.\n"
+                            "You can retry payment from My Orders."
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    logger.exception("Failed to notify buyer for failed cart payment reference=%s", reference)
+
+            return {
+                "status": "success",
+                "message": "Cart orders cancelled due to failed payment",
+                "order_ids": [order.id for order in cart_orders],
+            }
+
+        # Find single order
         result = await session.execute(
             select(Order)
             .options(selectinload(Order.buyer))

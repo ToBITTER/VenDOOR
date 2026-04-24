@@ -192,6 +192,46 @@ async def _safe_edit_or_reply(callback: CallbackQuery, text: str, **kwargs):
         await callback.message.answer(text, **kwargs)
 
 
+async def _upsert_agent_progress_card(
+    *,
+    delivery: Delivery,
+    session: AsyncSession,
+    chat_id: int,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    bot,
+) -> None:
+    """
+    Maintain a single progress card message per delivery per agent chat.
+    """
+    chat_id_str = str(chat_id)
+    existing_chat = (delivery.agent_progress_chat_id or "").strip()
+    existing_message_id = delivery.agent_progress_message_id
+
+    try:
+        if existing_chat == chat_id_str and existing_message_id:
+            await bot.edit_message_text(
+                chat_id=int(chat_id_str),
+                message_id=int(existing_message_id),
+                text=text,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+            return
+    except Exception:
+        pass
+
+    sent = await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="HTML",
+        reply_markup=reply_markup,
+    )
+    delivery.agent_progress_chat_id = chat_id_str
+    delivery.agent_progress_message_id = int(sent.message_id)
+    await session.commit()
+
+
 async def get_agent_by_telegram_id(telegram_id: int, session: AsyncSession) -> DeliveryAgent | None:
     """Fetch delivery agent by Telegram user ID."""
 
@@ -484,6 +524,19 @@ async def delivery_open_job(callback: CallbackQuery, session: AsyncSession):
                 ]
             ),
         )
+        await _upsert_agent_progress_card(
+            delivery=delivery,
+            session=session,
+            chat_id=callback.from_user.id,
+            text="<b>Delivery Progress Card</b>\n\nStage: READY_FOR_PICKUP\nTap START PICKUP to begin.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="START PICKUP", callback_data=f"delivery_start_pickup_{delivery.id}")],
+                    [InlineKeyboardButton(text="Back to Hub", callback_data="delivery_hub")],
+                ]
+            ),
+            bot=callback.bot,
+        )
         return
 
     if delivery.status == DeliveryStatus.PICKED_UP:
@@ -493,6 +546,14 @@ async def delivery_open_job(callback: CallbackQuery, session: AsyncSession):
             parse_mode="HTML",
             reply_markup=_delivery_progress_keyboard(delivery.id, stage="ready_in_transit"),
         )
+        await _upsert_agent_progress_card(
+            delivery=delivery,
+            session=session,
+            chat_id=callback.from_user.id,
+            text="<b>Delivery Progress Card</b>\n\nStage: PICKED_UP\nAll pickup stops completed.",
+            reply_markup=_delivery_progress_keyboard(delivery.id, stage="ready_in_transit"),
+            bot=callback.bot,
+        )
         return
 
     if delivery.status == DeliveryStatus.IN_TRANSIT:
@@ -501,6 +562,14 @@ async def delivery_open_job(callback: CallbackQuery, session: AsyncSession):
             "<b>Delivery In Transit</b>\n\nUse the buttons below for live updates.",
             parse_mode="HTML",
             reply_markup=_delivery_progress_keyboard(delivery.id, stage="in_transit"),
+        )
+        await _upsert_agent_progress_card(
+            delivery=delivery,
+            session=session,
+            chat_id=callback.from_user.id,
+            text="<b>Delivery Progress Card</b>\n\nStage: IN_TRANSIT\nUpdate location until delivered.",
+            reply_markup=_delivery_progress_keyboard(delivery.id, stage="in_transit"),
+            bot=callback.bot,
         )
         return
 
@@ -654,6 +723,21 @@ async def _show_next_seller_confirmation(callback: CallbackQuery, state: FSMCont
         parse_mode="HTML",
         reply_markup=_arrival_keyboard(int(delivery_id), int(current_do_data["id"])),
     )
+    delivery = await session.get(Delivery, int(delivery_id))
+    if delivery and callback.from_user:
+        await _upsert_agent_progress_card(
+            delivery=delivery,
+            session=session,
+            chat_id=callback.from_user.id,
+            text=(
+                "<b>Delivery Progress Card</b>\n\n"
+                f"Stage: PICKUP_STOP_{step_num}_OF_{total_steps}\n"
+                f"Seller: {current_do_data.get('seller_name', 'Seller')}\n"
+                f"Location: {current_do_data.get('seller_location', 'Location unavailable')}"
+            ),
+            reply_markup=_arrival_keyboard(int(delivery_id), int(current_do_data["id"])),
+            bot=callback.bot,
+        )
     await state.set_state(DeliveryAgentStates.awaiting_arrival_confirmation)
     await state.update_data(
         current_delivery_order_id=int(current_do_data["id"]),
@@ -686,6 +770,21 @@ async def _show_next_seller_confirmation_from_message(
         parse_mode="HTML",
         reply_markup=_arrival_keyboard(int(delivery_id), int(current_do_data["id"])),
     )
+    delivery = await session.get(Delivery, int(delivery_id))
+    if delivery and message.from_user:
+        await _upsert_agent_progress_card(
+            delivery=delivery,
+            session=session,
+            chat_id=message.from_user.id,
+            text=(
+                "<b>Delivery Progress Card</b>\n\n"
+                f"Stage: PICKUP_STOP_{step_num}_OF_{total_steps}\n"
+                f"Seller: {current_do_data.get('seller_name', 'Seller')}\n"
+                f"Location: {current_do_data.get('seller_location', 'Location unavailable')}"
+            ),
+            reply_markup=_arrival_keyboard(int(delivery_id), int(current_do_data["id"])),
+            bot=message.bot,
+        )
     await state.set_state(DeliveryAgentStates.awaiting_arrival_confirmation)
     await state.update_data(
         current_delivery_order_id=int(current_do_data["id"]),
@@ -834,6 +933,19 @@ async def receive_pickup_photo(message: Message, state: FSMContext, session: Asy
 
     if next_index < len(delivery_orders_data):
         await state.set_state(None)
+        delivery = await session.get(Delivery, int(delivery_id))
+        if delivery and message.from_user:
+            await _upsert_agent_progress_card(
+                delivery=delivery,
+                session=session,
+                chat_id=message.from_user.id,
+                text=(
+                    "<b>Delivery Progress Card</b>\n\n"
+                    f"Stage: PICKUP_PROGRESS\nCompleted stop {next_index} of {len(delivery_orders_data)}."
+                ),
+                reply_markup=_post_pickup_next_keyboard(int(delivery_id), has_next=True),
+                bot=message.bot,
+            )
         await message.answer(
             "Pickup saved as done for this stop.\n\nProceed to next location now?",
             reply_markup=_post_pickup_next_keyboard(int(delivery_id), has_next=True),
@@ -844,6 +956,16 @@ async def receive_pickup_photo(message: Message, state: FSMContext, session: Asy
     if message.from_user is not None:
         agent = await get_agent_by_telegram_id(message.from_user.id, session)
     await notify_buyer_all_pickups_completed(int(delivery_id), agent, session)
+    delivery = await session.get(Delivery, int(delivery_id))
+    if delivery and message.from_user:
+        await _upsert_agent_progress_card(
+            delivery=delivery,
+            session=session,
+            chat_id=message.from_user.id,
+            text="<b>Delivery Progress Card</b>\n\nStage: PICKUPS_COMPLETED\nReady to mark in transit.",
+            reply_markup=_delivery_progress_keyboard(int(delivery_id), stage="ready_in_transit"),
+            bot=message.bot,
+        )
 
     await message.answer(
         "All items collected.\n\nReady to proceed with delivery?\n\n"
@@ -931,6 +1053,16 @@ async def delivery_in_transit(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
     await update_delivery_status(delivery_id, DeliveryStatus.IN_TRANSIT, "AGENT", None, session)
     await session.commit()
+    delivery = await session.get(Delivery, int(delivery_id))
+    if delivery and callback.from_user:
+        await _upsert_agent_progress_card(
+            delivery=delivery,
+            session=session,
+            chat_id=callback.from_user.id,
+            text="<b>Delivery Progress Card</b>\n\nStage: IN_TRANSIT\nDelivery on the way to buyer.",
+            reply_markup=_delivery_progress_keyboard(delivery_id, stage="in_transit"),
+            bot=callback.bot,
+        )
 
     await notify_buyer_group_delivery_status_update(delivery_id, DeliveryStatus.IN_TRANSIT.value, agent, session)
 
@@ -999,6 +1131,20 @@ async def receive_delivery_location(message: Message, state: FSMContext, session
         longitude=longitude,
     )
     await session.commit()
+    delivery = await session.get(Delivery, int(delivery_id))
+    if delivery and message.from_user:
+        await _upsert_agent_progress_card(
+            delivery=delivery,
+            session=session,
+            chat_id=message.from_user.id,
+            text=(
+                "<b>Delivery Progress Card</b>\n\n"
+                "Stage: IN_TRANSIT\n"
+                f"Latest location: {note_text or 'Coordinates update received'}"
+            ),
+            reply_markup=_delivery_progress_keyboard(int(delivery_id), stage="in_transit"),
+            bot=message.bot,
+        )
 
     await message.answer(
         "Location recorded.\n\nContinue delivery when ready.",
@@ -1032,6 +1178,16 @@ async def delivery_mark_delivered(callback: CallbackQuery, state: FSMContext, se
     await safe_answer_callback(callback)
     await update_delivery_status(delivery_id, DeliveryStatus.DELIVERED, "AGENT", None, session)
     await session.commit()
+    delivery = await session.get(Delivery, int(delivery_id))
+    if delivery and callback.from_user:
+        await _upsert_agent_progress_card(
+            delivery=delivery,
+            session=session,
+            chat_id=callback.from_user.id,
+            text="<b>Delivery Progress Card</b>\n\nStage: DELIVERED\nJob completed successfully.",
+            reply_markup=_delivery_hub_keyboard(is_agent=True),
+            bot=callback.bot,
+        )
 
     await notify_buyer_group_delivery_status_update(delivery_id, DeliveryStatus.DELIVERED.value, agent, session)
 

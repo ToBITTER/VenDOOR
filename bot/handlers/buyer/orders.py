@@ -3,6 +3,7 @@ Buyer orders handler - view orders, confirm receipt, raise disputes.
 """
 
 import re
+from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,9 +13,13 @@ from sqlalchemy.orm import selectinload
 
 from bot.helpers.brand_assets import get_empty_state
 from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
-from bot.keyboards.main_menu import get_main_menu_inline, get_order_actions
-from db.models import Delivery, DeliveryOrder, Order, OrderStatus, SellerProfile, User
+from bot.keyboards.main_menu import get_main_menu_inline
+from core.config import get_settings
+from db.models import Delivery, DeliveryOrder, DeliveryStatus, Order, OrderStatus, SellerProfile, User
 from services.escrow import get_escrow_service
+from services.korapay import get_korapay_client
+
+settings = get_settings()
 
 router = Router()
 
@@ -150,11 +155,51 @@ def _delivery_group_actions_keyboard(delivery_id: int, fallback_order_id: int, c
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _cart_group_actions_keyboard(fallback_order_id: int) -> InlineKeyboardMarkup:
+def _cart_group_actions_keyboard(fallback_order_id: int, can_retry: bool) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text="Track Delivery", callback_data=f"order_track_{fallback_order_id}")]]
+    if can_retry:
+        rows.append([InlineKeyboardButton(text="Re-attempt Payment", callback_data=f"order_retry_group_{fallback_order_id}")])
     rows.append([InlineKeyboardButton(text="Raise Dispute", callback_data=f"order_dispute_{fallback_order_id}")])
     rows.append([InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _single_order_actions_keyboard(order: Order) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="Track Delivery", callback_data=f"order_track_{order.id}")]]
+    if order.status in {OrderStatus.PENDING, OrderStatus.CANCELLED}:
+        rows.append([InlineKeyboardButton(text="Re-attempt Payment", callback_data=f"order_retry_payment_{order.id}")])
+    else:
+        rows.append([InlineKeyboardButton(text="Confirm Receipt", callback_data=f"order_confirm_{order.id}")])
+    rows.append([InlineKeyboardButton(text="Raise Dispute", callback_data=f"order_dispute_{order.id}")])
+    rows.append([InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _resolve_customer_email(user: User, buyer_telegram_id: str) -> str:
+    if user.username and "@" in user.username:
+        return user.username.strip().lower()
+    return f"user_{buyer_telegram_id}@vendoor.app"
+
+
+def _order_bundle_timeline(orders: list[Order], delivery: Delivery | None) -> str:
+    paid_done = any(order.paid_at is not None or order.status in {OrderStatus.PAID, OrderStatus.COMPLETED} for order in orders)
+    picked_done = bool(delivery and delivery.status in {DeliveryStatus.PICKED_UP, DeliveryStatus.IN_TRANSIT, DeliveryStatus.DELIVERED})
+    in_transit_done = bool(delivery and delivery.status in {DeliveryStatus.IN_TRANSIT, DeliveryStatus.DELIVERED})
+    delivered_done = all(order.delivered_at is not None for order in orders)
+    confirmed_done = all(order.status == OrderStatus.COMPLETED for order in orders)
+
+    def _mark(done: bool) -> str:
+        return "DONE" if done else "PENDING"
+
+    lines = [
+        "<b>Timeline</b>",
+        f"- Paid: {_mark(paid_done)}",
+        f"- Picked Up: {_mark(picked_done)}",
+        f"- In Transit: {_mark(in_transit_done)}",
+        f"- Delivered: {_mark(delivered_done)}",
+        f"- Confirmed: {_mark(confirmed_done)}",
+    ]
+    return "\n".join(lines)
 
 
 async def _release_order_and_notify(callback: CallbackQuery, session: AsyncSession, order: Order) -> bool:
@@ -248,6 +293,8 @@ async def my_orders(callback: CallbackQuery, session: AsyncSession):
         first_order = group_orders[0]
         effective_delivery = group["delivery"]
         group_status = "PAID"
+        if any(order.status == OrderStatus.PENDING for order in group_orders):
+            group_status = "PENDING"
         if any(order.status == OrderStatus.DISPUTED for order in group_orders):
             group_status = "DISPUTED"
         elif all(order.status == OrderStatus.COMPLETED for order in group_orders):
@@ -363,6 +410,8 @@ async def view_cart_group(callback: CallbackQuery, session: AsyncSession):
     total_items = sum(order.quantity for order in orders)
     total_amount = sum(order.amount for order in orders)
     group_status = "PAID"
+    if any(order.status == OrderStatus.PENDING for order in orders):
+        group_status = "PENDING"
     if any(order.status == OrderStatus.DISPUTED for order in orders):
         group_status = "DISPUTED"
     elif all(order.status == OrderStatus.COMPLETED for order in orders):
@@ -385,12 +434,18 @@ async def view_cart_group(callback: CallbackQuery, session: AsyncSession):
         seller_name = order.seller.user.first_name if order.seller and order.seller.user else "Unknown seller"
         item_title = order.listing.title if order.listing else "Unknown item"
         lines.append(f"#{order.id} - {order.quantity} x {item_title} ({seller_name})")
+    lines.append("")
+    lines.append(_order_bundle_timeline(orders, None))
+    can_retry = (
+        any(order.status in {OrderStatus.PENDING, OrderStatus.CANCELLED} for order in orders)
+        and not any(order.status in {OrderStatus.PAID, OrderStatus.COMPLETED, OrderStatus.REFUNDED, OrderStatus.DISPUTED} for order in orders)
+    )
 
     await safe_replace_with_screen(
         callback,
         "\n".join(lines),
         parse_mode="HTML",
-        reply_markup=_cart_group_actions_keyboard(orders[0].id),
+        reply_markup=_cart_group_actions_keyboard(orders[0].id, can_retry=can_retry),
     )
 
 
@@ -441,6 +496,8 @@ async def view_delivery_group(callback: CallbackQuery, session: AsyncSession):
         seller_name = order.seller.user.first_name if order.seller and order.seller.user else "Unknown seller"
         item_title = order.listing.title if order.listing else "Unknown item"
         text.append(f"#{order.id} • {order.quantity} x {item_title} ({seller_name})")
+    text.append("")
+    text.append(_order_bundle_timeline(orders, delivery))
 
     can_confirm = any(order.status == OrderStatus.PAID and order.delivered_at for order in orders)
     await safe_replace_with_screen(
@@ -509,7 +566,7 @@ async def view_order(callback: CallbackQuery, session: AsyncSession):
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=get_order_actions(order.id),
+        reply_markup=_single_order_actions_keyboard(order),
     )
 
 
@@ -690,6 +747,178 @@ async def confirm_receipt_group_item(callback: CallbackQuery, session: AsyncSess
         await safe_replace_with_screen(callback, "Could not confirm receipt right now. Please try again.")
 
 
+@router.callback_query(F.data.regexp(r"^order_retry_payment_\d+$"))
+async def retry_single_order_payment(callback: CallbackQuery, session: AsyncSession):
+    order_id = _callback_int_suffix((callback.data or "").replace("order_retry_payment_", "view_order_"), "view_order_")
+    if order_id is None:
+        await safe_answer_callback(callback, text="Invalid retry request", show_alert=True)
+        return
+
+    buyer_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
+    buyer = buyer_result.scalars().first()
+    if not buyer:
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
+        return
+
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.listing))
+        .where(Order.id == order_id)
+    )
+    order = result.scalars().first()
+    if not order or order.buyer_id != buyer.id:
+        await safe_answer_callback(callback, text="Order not found", show_alert=True)
+        return
+    if order.status not in {OrderStatus.PENDING, OrderStatus.CANCELLED}:
+        await safe_answer_callback(callback, text=f"Order is {order.status.value}; retry not allowed.", show_alert=True)
+        return
+    if not order.listing or not order.listing.available or order.listing.quantity < order.quantity:
+        await safe_answer_callback(callback, text="Item is out of stock for retry.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    reference = f"VENDOOR_RETRY_{order.id}_{buyer.telegram_id}_{int(datetime.utcnow().timestamp())}"[:255]
+    korapay = get_korapay_client()
+    checkout = await korapay.initialize_charge(
+        amount=order.amount,
+        reference=reference,
+        customer_email=_resolve_customer_email(buyer, str(callback.from_user.id)),
+        customer_name=buyer.first_name,
+        callback_url=f"{settings.api_host}/webhooks/korapay",
+    )
+    if not checkout:
+        await safe_replace_with_screen(
+            callback,
+            "Could not initialize payment retry right now. Please try again shortly.",
+            reply_markup=get_main_menu_inline(),
+        )
+        return
+
+    order.transaction_ref = reference
+    order.status = OrderStatus.PENDING
+    order.paid_at = None
+    await session.commit()
+
+    await safe_replace_with_screen(
+        callback,
+        (
+            "<b>Retry Payment</b>\n\n"
+            f"Order #{order.id}\n"
+            f"Amount: NGN {order.amount:,.2f}\n\n"
+            "Tap below to complete payment."
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Pay Now", url=checkout.checkout_url)],
+                [InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")],
+            ]
+        ),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^order_retry_group_\d+$"))
+async def retry_cart_group_payment(callback: CallbackQuery, session: AsyncSession):
+    seed_order_id = _callback_int_suffix((callback.data or "").replace("order_retry_group_", "view_cart_group_"), "view_cart_group_")
+    if seed_order_id is None:
+        await safe_answer_callback(callback, text="Invalid retry bundle request", show_alert=True)
+        return
+
+    buyer_result = await session.execute(select(User).where(User.telegram_id == str(callback.from_user.id)))
+    buyer = buyer_result.scalars().first()
+    if not buyer:
+        await safe_answer_callback(callback, text="User not found", show_alert=True)
+        return
+
+    seed_result = await session.execute(select(Order).where(Order.id == seed_order_id))
+    seed_order = seed_result.scalars().first()
+    if not seed_order or seed_order.buyer_id != buyer.id:
+        await safe_answer_callback(callback, text="Order bundle not found", show_alert=True)
+        return
+    cart_ref = _cart_group_ref(seed_order)
+    if not cart_ref:
+        await safe_answer_callback(callback, text="This order is not part of a cart bundle", show_alert=True)
+        return
+
+    result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.listing))
+        .where(Order.buyer_id == buyer.id)
+        .where(Order.transaction_ref.like(f"{cart_ref}%"))
+        .order_by(Order.created_at.asc(), Order.id.asc())
+    )
+    bundle_orders = result.scalars().all()
+    if not bundle_orders:
+        await safe_answer_callback(callback, text="Bundle orders not found", show_alert=True)
+        return
+
+    retry_orders = [order for order in bundle_orders if order.status in {OrderStatus.PENDING, OrderStatus.CANCELLED}]
+    if not retry_orders:
+        await safe_answer_callback(callback, text="No retry-eligible orders in this bundle.", show_alert=True)
+        return
+    if any(order.status in {OrderStatus.PAID, OrderStatus.COMPLETED, OrderStatus.DISPUTED, OrderStatus.REFUNDED} for order in bundle_orders):
+        await safe_answer_callback(callback, text="Bundle has active/closed orders; retry each order separately.", show_alert=True)
+        return
+
+    required_by_listing: dict[int, int] = {}
+    for order in retry_orders:
+        required_by_listing[order.listing_id] = required_by_listing.get(order.listing_id, 0) + order.quantity
+    listings_result = await session.execute(
+        select(Order)
+        .options(selectinload(Order.listing))
+        .where(Order.id.in_([order.id for order in retry_orders]))
+    )
+    listing_holder = listings_result.scalars().all()
+    listing_map = {order.id: order.listing for order in listing_holder}
+    for order in retry_orders:
+        listing = listing_map.get(order.id)
+        if not listing or not listing.available or listing.quantity < required_by_listing.get(listing.id, order.quantity):
+            await safe_answer_callback(callback, text="One or more items are out of stock.", show_alert=True)
+            return
+
+    await safe_answer_callback(callback)
+    order_ids = [str(order.id) for order in retry_orders]
+    cart_reference = f"VENDOOR_CART_{buyer.telegram_id}_{int(datetime.utcnow().timestamp())}_{'-'.join(order_ids)}"
+    korapay = get_korapay_client()
+    checkout = await korapay.initialize_charge(
+        amount=sum(order.amount for order in retry_orders),
+        reference=cart_reference,
+        customer_email=_resolve_customer_email(buyer, str(callback.from_user.id)),
+        customer_name=buyer.first_name,
+        callback_url=f"{settings.api_host}/webhooks/korapay",
+    )
+    if not checkout:
+        await safe_replace_with_screen(
+            callback,
+            "Could not initialize bundle payment retry right now. Please try again shortly.",
+            reply_markup=get_main_menu_inline(),
+        )
+        return
+
+    for idx, order in enumerate(retry_orders):
+        order.status = OrderStatus.PENDING
+        order.paid_at = None
+        order.transaction_ref = cart_reference if idx == 0 else f"{cart_reference}_{order.id}"[:255]
+    await session.commit()
+
+    await safe_replace_with_screen(
+        callback,
+        (
+            "<b>Bundle Retry Payment</b>\n\n"
+            f"Orders: {len(retry_orders)}\n"
+            f"Total: NGN {sum(order.amount for order in retry_orders):,.2f}\n\n"
+            "Tap below to pay once for all items."
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Pay Bundle Now", url=checkout.checkout_url)],
+                [InlineKeyboardButton(text="Back to Orders", callback_data="my_orders")],
+            ]
+        ),
+    )
+
+
 @router.callback_query(F.data.startswith("order_track_"))
 async def track_order(callback: CallbackQuery, session: AsyncSession):
     order_id = _callback_int_suffix(callback.data, "order_track_")
@@ -746,5 +975,5 @@ async def track_order(callback: CallbackQuery, session: AsyncSession):
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=get_order_actions(order.id),
+        reply_markup=_single_order_actions_keyboard(order),
     )

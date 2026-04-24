@@ -40,6 +40,16 @@ class KorapayPayoutResult:
     raw: dict | None = None
 
 
+@dataclass
+class KorapayAccountResolution:
+    """Response from resolving account number to account name."""
+
+    ok: bool
+    account_name: str | None = None
+    message: str | None = None
+    raw: dict | None = None
+
+
 class KorapayClient:
     """
     Korapay API client for initiating and verifying payments.
@@ -249,6 +259,84 @@ class KorapayClient:
             logger.exception("Korapay verification error")
         
         return None
+
+    async def resolve_bank_account_name(self, bank_code: str, account_number: str) -> KorapayAccountResolution:
+        """
+        Resolve account name for bank code + account number.
+        Tries common Korapay account-resolution endpoint shapes.
+        """
+        bank_code = str(bank_code or "").strip()
+        account_number = str(account_number or "").strip()
+        if not bank_code or not account_number:
+            return KorapayAccountResolution(ok=False, message="missing_bank_or_account")
+
+        candidates: list[tuple[str, str, dict | None]] = [
+            (
+                "GET",
+                f"{self.base_url}/misc/banks/resolve?bank={bank_code}&account_number={account_number}",
+                None,
+            ),
+            (
+                "POST",
+                f"{self.base_url}/misc/banks/resolve",
+                {"bank": bank_code, "account_number": account_number},
+            ),
+            (
+                "POST",
+                f"{self.base_url}/transactions/disburse/resolve",
+                {"bank": bank_code, "account": account_number},
+            ),
+        ]
+
+        last_payload: dict | None = None
+        last_message: str | None = None
+        try:
+            async with httpx.AsyncClient() as client:
+                for method, url, payload in candidates:
+                    if method == "GET":
+                        response = await client.get(url, headers=self.headers, timeout=12.0)
+                    else:
+                        response = await client.post(url, json=payload, headers=self.headers, timeout=12.0)
+
+                    if not response.is_success:
+                        logger.warning(
+                            "Korapay account resolve probe failed status=%s endpoint=%s",
+                            response.status_code,
+                            url,
+                        )
+                        continue
+
+                    body = response.json()
+                    if not isinstance(body, dict):
+                        continue
+                    last_payload = body
+                    last_message = str(body.get("message") or "").strip() or None
+                    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+                    account_name = (
+                        data.get("account_name")
+                        or data.get("accountName")
+                        or data.get("name")
+                    )
+                    if account_name:
+                        return KorapayAccountResolution(
+                            ok=True,
+                            account_name=str(account_name).strip(),
+                            message=last_message or "resolved",
+                            raw=body,
+                        )
+        except Exception:
+            logger.exception(
+                "Korapay account resolution exception bank=%s account=%s",
+                bank_code,
+                account_number,
+            )
+            return KorapayAccountResolution(ok=False, message="exception")
+
+        return KorapayAccountResolution(
+            ok=False,
+            message=last_message or "resolve_failed",
+            raw=last_payload,
+        )
 
     async def disburse_to_bank_account(
         self,

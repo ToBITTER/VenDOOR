@@ -125,6 +125,11 @@ class User(Base):
         back_populates="buyer",
         cascade="all, delete-orphan",
     )
+    notification_logs: Mapped[list["NotificationLog"]] = relationship(
+        "NotificationLog",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<User {self.telegram_id} - {self.first_name}>"
@@ -168,6 +173,7 @@ class SellerProfile(Base):
     is_featured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     priority_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     bank_code: Mapped[str] = mapped_column(String(10), nullable=False)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     account_number: Mapped[str] = mapped_column(String(20), nullable=False)
     account_name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -450,6 +456,8 @@ class Delivery(Base):
     picked_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     in_transit_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    agent_progress_chat_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    agent_progress_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -504,4 +512,28 @@ class WebhookReceipt(Base):
     __table_args__ = (
         UniqueConstraint("provider", "event_type", "reference", name="uq_webhook_receipt_provider_event_reference"),
         Index("ix_webhook_receipts_created_at", "created_at"),
+    )
+
+
+class NotificationLog(Base):
+    """Outbound communication log for dedupe, audit, and analytics."""
+
+    __tablename__ = "notification_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    channel: Mapped[str] = mapped_column(String(32), nullable=False, default="telegram")
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="sent", index=True)
+    dedupe_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True)
+    context_ref: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    message: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user: Mapped[Optional["User"]] = relationship("User", back_populates="notification_logs")
+
+    __table_args__ = (
+        Index("ix_notification_logs_created_at", "created_at"),
+        Index("ix_notification_logs_event_status", "event_type", "status"),
     )

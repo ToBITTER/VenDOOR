@@ -3,7 +3,7 @@ Admin handlers for seller verification workflows.
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import logging
 import re
@@ -37,6 +37,7 @@ from db.models import (
     DeliveryOrder,
     DeliveryStatus,
     Listing,
+    NotificationLog,
     Order,
     OrderStatus,
     SellerProfile,
@@ -155,6 +156,7 @@ def _admin_tools_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Vendor Privileges", callback_data="admin_privileges_help"),
                 InlineKeyboardButton(text="Broadcast", callback_data="admin_broadcast_help"),
             ],
+            [InlineKeyboardButton(text="Flow Health", callback_data="admin_flow_health")],
             [InlineKeyboardButton(text="Ops Admins", callback_data="admin_ops_admins")],
             [InlineKeyboardButton(text="Danger Zone", callback_data="admin_danger_tools")],
             [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
@@ -348,7 +350,7 @@ async def _render_pending_text(session: AsyncSession) -> str:
         text += (
             f"<b>Student:</b> {'Yes' if seller.is_student else 'No'}\n"
             f"<b>Email:</b> {seller.student_email or 'N/A'}\n"
-            f"<b>Bank:</b> {seller.bank_code} / {seller.account_number}\n"
+            f"<b>Bank:</b> {(seller.bank_name or seller.bank_code)} ({seller.bank_code}) / {seller.account_number}\n"
             f"<b>Account Name:</b> {seller.account_name}\n"
             f"<b>ID Doc:</b> {seller.id_document_url or 'N/A'}\n"
             f"<b>Submitted:</b> {seller.created_at.strftime('%Y-%m-%d %H:%M')}\n"
@@ -386,6 +388,67 @@ async def _render_stats_text(session: AsyncSession) -> str:
         f"<b>Completed Orders:</b> {stats.completed_orders or 0}\n"
         f"<b>Verified Sellers:</b> {stats.verified_sellers or 0}\n"
         f"<b>Active Listings:</b> {stats.active_listings or 0}"
+    )
+
+
+async def _render_flow_health_text(session: AsyncSession) -> str:
+    now = datetime.now(timezone.utc)
+    since_24h = now - timedelta(hours=24)
+    stuck_before = now - timedelta(hours=3)
+
+    failed_callbacks_result = await session.execute(
+        select(func.count(NotificationLog.id))
+        .where(NotificationLog.event_type == "callback_error")
+        .where(NotificationLog.status == "failed")
+        .where(NotificationLog.created_at >= since_24h)
+    )
+    failed_callbacks = int(failed_callbacks_result.scalar() or 0)
+
+    reminder_sent_result = await session.execute(
+        select(func.count(NotificationLog.id))
+        .where(NotificationLog.event_type == "delivery_confirmation_reminder")
+        .where(NotificationLog.status == "sent")
+        .where(NotificationLog.created_at >= since_24h)
+    )
+    reminders_sent = int(reminder_sent_result.scalar() or 0)
+
+    payout_errors_result = await session.execute(
+        select(func.count(Order.id))
+        .where(Order.seller_payout_ref.is_not(None))
+        .where(
+            Order.seller_payout_status.in_(
+                ("failed", "error", "cancelled", "declined", "reversed", "not_authorized")
+            )
+        )
+    )
+    payout_errors = int(payout_errors_result.scalar() or 0)
+
+    stuck_deliveries_result = await session.execute(
+        select(func.count(Delivery.id))
+        .where(Delivery.status.in_((DeliveryStatus.ASSIGNED, DeliveryStatus.PICKED_UP, DeliveryStatus.IN_TRANSIT)))
+        .where(Delivery.updated_at < stuck_before)
+    )
+    stuck_deliveries = int(stuck_deliveries_result.scalar() or 0)
+
+    unresolved_disputes_result = await session.execute(
+        select(func.count(Complaint.id)).where(
+            Complaint.status.in_((DisputeStatus.OPEN, DisputeStatus.INVESTIGATING))
+        )
+    )
+    unresolved_disputes = int(unresolved_disputes_result.scalar() or 0)
+
+    return (
+        "<b>Flow Health</b>\n\n"
+        f"<b>Failed Callbacks (24h):</b> {failed_callbacks}\n"
+        f"<b>Payout Errors (open):</b> {payout_errors}\n"
+        f"<b>Stuck Deliveries (&gt;3h):</b> {stuck_deliveries}\n"
+        f"<b>Unresolved Disputes:</b> {unresolved_disputes}\n"
+        f"<b>Reminder Notifications Sent (24h):</b> {reminders_sent}\n\n"
+        "<b>Targets</b>\n"
+        "- Failed callbacks: 0\n"
+        "- Payout errors: 0\n"
+        "- Stuck deliveries: 0\n"
+        "- Unresolved disputes: as low as possible"
     )
 
 
@@ -968,6 +1031,7 @@ async def review_seller(message: Message, session: AsyncSession):
         f"<b>Hall:</b> {seller.hall or 'N/A'}\n"
         f"<b>Room Number:</b> {seller.room_number or 'N/A'}\n"
         f"<b>Address:</b> {seller.address or 'N/A'}\n"
+        f"<b>Bank:</b> {(seller.bank_name or seller.bank_code)}\n"
         f"<b>Bank Code:</b> {seller.bank_code}\n"
         f"<b>Account Number:</b> {seller.account_number}\n"
         f"<b>Account Name:</b> {seller.account_name}\n"
@@ -1196,6 +1260,7 @@ async def open_admin_tools(callback: CallbackQuery, state: FSMContext, session: 
         "- Complaints + IP\n"
         "- Delivery Agents\n"
         "- Pending Sellers\n"
+        "- Flow Health\n"
         "- Vendor Privileges\n"
         "- Broadcast\n\n"
         "Danger Zone contains all delete actions.\n"
@@ -1216,6 +1281,21 @@ async def admin_stats(callback: CallbackQuery, session: AsyncSession):
         return
     await safe_answer_callback(callback)
     text = await _render_stats_text(session)
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_tools_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_flow_health")
+async def admin_flow_health(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    text = await _render_flow_health_text(session)
     await safe_replace_with_screen(
         callback,
         text,

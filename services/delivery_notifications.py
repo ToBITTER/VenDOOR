@@ -322,6 +322,12 @@ async def notify_buyer_group_delivery_status_update(
             "<b>Delivery In Transit</b>\n\n"
             f"Combined order: {order_ids_text}\n"
             f"Items on the way: {total_items}\n"
+            "\n<b>Timeline</b>\n"
+            "- Paid: DONE\n"
+            "- Picked Up: DONE\n"
+            "- In Transit: DONE\n"
+            "- Delivered: PENDING\n"
+            "- Confirmed: PENDING\n"
         )
         if agent:
             message_text += f"Driver: {agent.name}"
@@ -333,7 +339,13 @@ async def notify_buyer_group_delivery_status_update(
             "<b>Delivery Completed</b>\n\n"
             f"Combined order: {order_ids_text}\n"
             f"Delivered items: {total_items}\n\n"
-            "Confirm receipt for each item below."
+            "Confirm receipt for each item below.\n\n"
+            "<b>Timeline</b>\n"
+            "- Paid: DONE\n"
+            "- Picked Up: DONE\n"
+            "- In Transit: DONE\n"
+            "- Delivered: DONE\n"
+            "- Confirmed: PENDING\n"
         )
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 

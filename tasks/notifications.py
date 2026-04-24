@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from core.config import get_settings
-from db.models import Order, OrderStatus
+from db.models import NotificationLog, Order, OrderStatus
 from db.session import create_engine, create_session_maker
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,19 @@ def send_pending_notifications() -> dict:
                         skipped += 1
                         continue
 
+                    dedupe_key = (
+                        f"delivery_confirmation_reminder:{order.id}:"
+                        f"{order.delivery_confirm_deadline_at.strftime('%Y%m%d%H%M') if order.delivery_confirm_deadline_at else 'na'}"
+                    )
+                    already_sent_result = await session.execute(
+                        select(NotificationLog.id)
+                        .where(NotificationLog.dedupe_key == dedupe_key)
+                        .limit(1)
+                    )
+                    if already_sent_result.scalar_one_or_none():
+                        skipped += 1
+                        continue
+
                     try:
                         await bot.send_message(
                             chat_id=int(buyer.telegram_id),
@@ -90,10 +103,34 @@ def send_pending_notifications() -> dict:
                             ),
                             parse_mode="HTML",
                         )
+                        session.add(
+                            NotificationLog(
+                                user_id=buyer.id,
+                                channel="telegram",
+                                event_type="delivery_confirmation_reminder",
+                                status="sent",
+                                dedupe_key=dedupe_key,
+                                context_ref=f"order:{order.id}",
+                                message="Reminder sent before auto-release deadline",
+                                sent_at=datetime.utcnow(),
+                            )
+                        )
                         sent += 1
                     except Exception:
                         skipped += 1
+                        session.add(
+                            NotificationLog(
+                                user_id=buyer.id,
+                                channel="telegram",
+                                event_type="delivery_confirmation_reminder",
+                                status="failed",
+                                dedupe_key=f"{dedupe_key}:failed:{int(datetime.utcnow().timestamp())}",
+                                context_ref=f"order:{order.id}",
+                                message="Reminder send failed",
+                            )
+                        )
                         logger.exception("Failed sending reminder for order %s", order.id)
+                await session.commit()
         finally:
             await bot.session.close()
             await engine.dispose()

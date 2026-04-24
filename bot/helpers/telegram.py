@@ -2,8 +2,17 @@
 Telegram API safety helpers for callback UX and no-op edits.
 """
 
+from datetime import datetime
+import logging
+
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
+from sqlalchemy import select
+
+from db.models import NotificationLog, User
+from db.session import create_engine, create_session_maker
+
+logger = logging.getLogger(__name__)
 
 
 def _is_not_modified_error(exc: TelegramBadRequest) -> bool:
@@ -61,6 +70,7 @@ async def safe_answer_callback(callback: CallbackQuery, **kwargs) -> bool:
         return True
     except TelegramBadRequest as exc:
         if _is_stale_callback_error(exc):
+            await _log_callback_error(callback, reason="stale_callback")
             return False
         raise
 
@@ -126,3 +136,35 @@ async def safe_replace_with_screen(
         return
 
     await safe_edit_text(callback, text, **kwargs)
+
+
+async def _log_callback_error(callback: CallbackQuery, reason: str) -> None:
+    """
+    Best-effort callback error logging for admin flow-health diagnostics.
+    """
+    try:
+        telegram_id = str(callback.from_user.id) if callback.from_user else ""
+        engine = create_engine()
+        session_maker = create_session_maker(engine)
+        async with session_maker() as session:
+            user_id = None
+            if telegram_id:
+                result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+                user = result.scalars().first()
+                if user:
+                    user_id = user.id
+            session.add(
+                NotificationLog(
+                    user_id=user_id,
+                    channel="telegram",
+                    event_type="callback_error",
+                    status="failed",
+                    dedupe_key=f"callback_error:{telegram_id}:{reason}:{int(datetime.utcnow().timestamp())}",
+                    context_ref=(callback.data or "")[:255] if callback.data else None,
+                    message=reason,
+                )
+            )
+            await session.commit()
+        await engine.dispose()
+    except Exception:
+        logger.exception("Failed to persist callback error telemetry")

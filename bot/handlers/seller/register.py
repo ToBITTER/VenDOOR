@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.helpers.telegram import safe_answer_callback, safe_replace_with_screen
+from bot.helpers.banks import bank_name_from_code, build_bank_picker_keyboard
 from bot.helpers.residence import (
     build_floor_keyboard,
     build_hall_keyboard,
@@ -22,6 +23,7 @@ from bot.helpers.residence import (
 from bot.keyboards.main_menu import get_confirmation_keyboard, get_main_menu_inline
 from core.config import get_settings
 from db.models import SellerProfile, User
+from services.korapay import get_korapay_client
 
 router = Router()
 settings = get_settings()
@@ -39,8 +41,47 @@ class SellerRegistrationStates(StatesGroup):
     awaiting_id_document = State()
     awaiting_bank_code = State()
     awaiting_account_number = State()
+    awaiting_account_name_choice = State()
     awaiting_account_name = State()
     confirming_details = State()
+
+
+def _account_name_choice_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Use Verified Name", callback_data="seller_account_name_accept")],
+            [InlineKeyboardButton(text="Enter Manually", callback_data="seller_account_name_manual")],
+        ]
+    )
+
+
+async def _send_registration_confirmation(message: Message, state: FSMContext, account_name: str) -> None:
+    data = await state.get_data()
+    bank_code = str(data.get("bank_code") or "").strip()
+    bank_name = str(data.get("bank_name") or "").strip() or (bank_name_from_code(bank_code) or bank_code)
+
+    confirmation_text = (
+        "<b>Confirm Your Details</b>\n\n"
+        f"<b>Full Name:</b> {data.get('full_name')}\n"
+        f"<b>Level:</b> {data.get('level')}\n"
+        "<b>Type:</b> Student\n"
+        f"<b>Email:</b> {data.get('student_email')}\n"
+        f"<b>Hall:</b> {data.get('hall')}\n"
+        f"<b>Room Number:</b> {data.get('room_number')}\n"
+        f"<b>Bank:</b> {bank_name}\n"
+        f"<b>Bank Code:</b> {bank_code}\n"
+        f"<b>Account Number:</b> {data.get('account_number')}\n"
+        f"<b>Account Name:</b> {account_name}\n\n"
+        "Is everything correct?"
+    )
+
+    await state.update_data(account_name=account_name)
+    await message.answer(
+        confirmation_text,
+        parse_mode="HTML",
+        reply_markup=get_confirmation_keyboard(),
+    )
+    await state.set_state(SellerRegistrationStates.confirming_details)
 
 
 @router.callback_query(F.data == "seller_register")
@@ -272,22 +313,45 @@ async def handle_id_document(message: Message, state: FSMContext):
     await state.update_data(id_document_url=file_id)
     await message.answer(
         "<b>Bank Details</b>\n\n"
-        "Enter your bank code.\n"
-        "Example: 033 (First Bank), 044 (Access Bank), 050 (Ecobank)",
+        "Select your bank:",
         parse_mode="HTML",
+        reply_markup=build_bank_picker_keyboard("seller_bank_"),
     )
     await state.set_state(SellerRegistrationStates.awaiting_bank_code)
+
+
+@router.callback_query(F.data.startswith("seller_bank_"), StateFilter(SellerRegistrationStates.awaiting_bank_code))
+async def handle_bank_picker(callback: CallbackQuery, state: FSMContext):
+    bank_code = (callback.data or "").replace("seller_bank_", "", 1).strip()
+    bank_name = bank_name_from_code(bank_code)
+    if not bank_name:
+        await safe_answer_callback(callback, text="Invalid bank selection.", show_alert=True)
+        return
+
+    await safe_answer_callback(callback)
+    await state.update_data(bank_code=bank_code, bank_name=bank_name)
+    await safe_replace_with_screen(
+        callback,
+        (
+            "<b>Account Number</b>\n\n"
+            f"Bank: {bank_name}\n"
+            "Enter your account number (10 digits)."
+        ),
+        parse_mode="HTML",
+    )
+    await state.set_state(SellerRegistrationStates.awaiting_account_number)
 
 
 @router.message(SellerRegistrationStates.awaiting_bank_code)
 async def handle_bank_code(message: Message, state: FSMContext):
     bank_code = (message.text or "").strip()
+    bank_name = bank_name_from_code(bank_code)
 
-    if len(bank_code) < 2:
-        await message.reply("Please enter a valid bank code.")
+    if len(bank_code) < 2 and not bank_name:
+        await message.reply("Please select your bank from the list.")
         return
 
-    await state.update_data(bank_code=bank_code)
+    await state.update_data(bank_code=bank_code, bank_name=(bank_name or bank_code))
 
     await message.answer(
         "<b>Account Number</b>\n\n"
@@ -301,15 +365,71 @@ async def handle_bank_code(message: Message, state: FSMContext):
 async def handle_account_number(message: Message, state: FSMContext):
     account_number = (message.text or "").strip()
 
-    if not account_number.isdigit() or len(account_number) < 8:
-        await message.reply("Please enter a valid account number (8-10 digits).")
+    if not account_number.isdigit() or len(account_number) != 10:
+        await message.reply("Please enter a valid account number (10 digits).")
         return
 
-    await state.update_data(account_number=account_number)
+    data = await state.get_data()
+    bank_code = str(data.get("bank_code") or "").strip()
+    bank_name = str(data.get("bank_name") or "").strip() or (bank_name_from_code(bank_code) or bank_code)
+    await state.update_data(account_number=account_number, bank_name=bank_name)
+
+    korapay = get_korapay_client()
+    resolution = await korapay.resolve_bank_account_name(bank_code=bank_code, account_number=account_number)
+    if resolution.ok and resolution.account_name:
+        await state.update_data(verified_account_name=resolution.account_name)
+        await message.answer(
+            (
+                "<b>Account Verification</b>\n\n"
+                f"Bank: {bank_name}\n"
+                f"Resolved Account Name: <b>{resolution.account_name}</b>\n\n"
+                "Use this verified account name?"
+            ),
+            parse_mode="HTML",
+            reply_markup=_account_name_choice_keyboard(),
+        )
+        await state.set_state(SellerRegistrationStates.awaiting_account_name_choice)
+        return
 
     await message.answer(
         "<b>Account Name</b>\n\n"
+        "We could not auto-verify account name right now.\n"
         "Enter the account holder name as it appears on your bank account.",
+        parse_mode="HTML",
+    )
+    await state.set_state(SellerRegistrationStates.awaiting_account_name)
+
+
+@router.callback_query(
+    F.data == "seller_account_name_accept",
+    StateFilter(SellerRegistrationStates.awaiting_account_name_choice),
+)
+async def accept_verified_account_name(callback: CallbackQuery, state: FSMContext):
+    await safe_answer_callback(callback)
+    data = await state.get_data()
+    verified_name = (data.get("verified_account_name") or "").strip()
+    if not verified_name:
+        await safe_replace_with_screen(
+            callback,
+            "Verified account name not found. Please enter manually.",
+            parse_mode="HTML",
+        )
+        await state.set_state(SellerRegistrationStates.awaiting_account_name)
+        return
+
+    if callback.message:
+        await _send_registration_confirmation(callback.message, state, verified_name)
+
+
+@router.callback_query(
+    F.data == "seller_account_name_manual",
+    StateFilter(SellerRegistrationStates.awaiting_account_name_choice),
+)
+async def choose_manual_account_name(callback: CallbackQuery, state: FSMContext):
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        "<b>Account Name</b>\n\nEnter the account holder name as it appears on your bank account.",
         parse_mode="HTML",
     )
     await state.set_state(SellerRegistrationStates.awaiting_account_name)
@@ -321,33 +441,7 @@ async def handle_account_name(message: Message, state: FSMContext):
     if len(account_name) < 2:
         await message.reply("Please enter a valid account name.")
         return
-    data = await state.get_data()
-
-    confirmation_text = (
-        "<b>Confirm Your Details</b>\n\n"
-        f"<b>Full Name:</b> {data.get('full_name')}\n"
-        f"<b>Level:</b> {data.get('level')}\n"
-        "<b>Type:</b> Student\n"
-        f"<b>Email:</b> {data.get('student_email')}\n"
-        f"<b>Hall:</b> {data.get('hall')}\n"
-        f"<b>Room Number:</b> {data.get('room_number')}\n"
-    )
-
-    confirmation_text += (
-        f"<b>Bank Code:</b> {data.get('bank_code')}\n"
-        f"<b>Account Number:</b> {data.get('account_number')}\n"
-        f"<b>Account Name:</b> {account_name}\n\n"
-        "Is everything correct?"
-    )
-
-    await state.update_data(account_name=account_name)
-
-    await message.answer(
-        confirmation_text,
-        parse_mode="HTML",
-        reply_markup=get_confirmation_keyboard(),
-    )
-    await state.set_state(SellerRegistrationStates.confirming_details)
+    await _send_registration_confirmation(message, state, account_name)
 
 
 @router.callback_query(F.data == "confirm_yes", StateFilter(SellerRegistrationStates.confirming_details))
@@ -372,6 +466,7 @@ async def confirm_seller_registration(callback: CallbackQuery, state: FSMContext
             id_document_url=data.get("id_document_url"),
             verified=False,
             bank_code=data.get("bank_code"),
+            bank_name=data.get("bank_name"),
             account_number=data.get("account_number"),
             account_name=data.get("account_name"),
         )
