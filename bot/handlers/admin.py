@@ -483,11 +483,15 @@ async def _render_payouts_text(session: AsyncSession, limit: int = 15) -> str:
             continue
         seller_name = order.seller.user.first_name if order.seller and order.seller.user else "Unknown"
         buyer_name = order.buyer.first_name if order.buyer else "Unknown"
+        payout_status = order.seller_payout_status or "N/A"
+        if payout_status == "not_authorized":
+            payout_status = "not_authorized (enable NGN bank_account payout API on Korapay)"
+
         text += (
             f"<b>Order #{order.id}</b>\n"
             f"Order status: {order.status.value}\n"
             f"Payout ref: {order.seller_payout_ref or 'N/A'}\n"
-            f"Payout status: {order.seller_payout_status or 'N/A'}\n"
+            f"Payout status: {payout_status}\n"
             f"Attempted at: {order.seller_payout_attempted_at.strftime('%Y-%m-%d %H:%M') if order.seller_payout_attempted_at else 'N/A'}\n"
             f"Buyer: {buyer_name} | Seller: {seller_name}\n\n"
         )

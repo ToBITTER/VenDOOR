@@ -71,6 +71,27 @@ class KorapayClient:
             return value.lower() == "success"
         return False
 
+    @staticmethod
+    def _normalize_payout_failure_status(data: dict | None, status_code: int) -> str:
+        """
+        Convert Korapay failure payloads into stable internal status values.
+        """
+        payload = data or {}
+        message = str(payload.get("message") or "").strip().lower()
+        top_level_status = str(payload.get("status") or "").strip().lower()
+        nested = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        nested_status = str(nested.get("status") or "").strip().lower()
+
+        if status_code in {401, 403}:
+            return "not_authorized"
+        if "not authorized" in message or "unauthorized" in message:
+            return "not_authorized"
+        if nested_status and nested_status not in {"false", "none", "null"}:
+            return nested_status
+        if top_level_status in {"false", "0", "none", "null", ""}:
+            return "failed"
+        return top_level_status or "failed"
+
     def _resolve_encryption_key(self) -> bytes:
         key = (self.encryption_key or "").strip()
         if not key:
@@ -279,6 +300,10 @@ class KorapayClient:
                 is_ok = self._is_success_status(data.get("status")) if isinstance(data, dict) else False
 
                 if not response.is_success or not is_ok:
+                    normalized_status = self._normalize_payout_failure_status(
+                        data if isinstance(data, dict) else None,
+                        response.status_code,
+                    )
                     logger.error(
                         "Korapay disbursement failed status_code=%s response=%s reference=%s",
                         response.status_code,
@@ -288,7 +313,7 @@ class KorapayClient:
                     return KorapayPayoutResult(
                         ok=False,
                         reference=reference,
-                        status=status_value,
+                        status=normalized_status,
                         message=(data.get("message") if isinstance(data, dict) else "payout_failed"),
                         raw=data if isinstance(data, dict) else None,
                     )

@@ -272,7 +272,7 @@ async def handle_korapay_webhook(
 
         elif event_lc in failed_events or status in failed_statuses:
             # Payment failed - cancel order
-            return await _handle_payment_failed(reference, session)
+            return await _handle_payment_failed(reference, session, bot)
 
         else:
             # Unknown event
@@ -691,7 +691,7 @@ async def _handle_cart_payment_success(
     }
 
 
-async def _handle_payment_failed(reference: str, session: AsyncSession) -> dict:
+async def _handle_payment_failed(reference: str, session: AsyncSession, bot: Bot | None = None) -> dict:
     """
     Handle failed payment:
     Cancel the order and notify buyer.
@@ -702,7 +702,9 @@ async def _handle_payment_failed(reference: str, session: AsyncSession) -> dict:
 
         # Find order
         result = await session.execute(
-            select(Order).where(Order.transaction_ref == reference)
+            select(Order)
+            .options(selectinload(Order.buyer))
+            .where(Order.transaction_ref == reference)
         )
         order = result.scalars().first()
         
@@ -726,13 +728,20 @@ async def _handle_payment_failed(reference: str, session: AsyncSession) -> dict:
         # Cancel pending order only
         order.status = OrderStatus.CANCELLED
         await session.commit()
-        
-        # TODO: Send Telegram notification to buyer
-        # await bot.send_message(
-        #     order.buyer.telegram_id,
-        #     f"❌ Payment failed for order #{order.id}. Please try again."
-        # )
-        
+
+        if bot and order.buyer and order.buyer.telegram_id:
+            try:
+                await bot.send_message(
+                    chat_id=int(order.buyer.telegram_id),
+                    text=(
+                        "<b>Payment Failed</b>\n\n"
+                        f"Order #{order.id} was cancelled because payment did not complete.\n"
+                        "Please place the order again when you are ready."
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                logger.exception("Failed to notify buyer for failed payment order_id=%s", order.id)
         return {
             "status": "success",
             "message": "Order cancelled due to failed payment",
@@ -743,3 +752,4 @@ async def _handle_payment_failed(reference: str, session: AsyncSession) -> dict:
         await session.rollback()
         logger.exception("Payment failed handler error")
         return {"status": "error", "error": "payment_failed_handler_failed"}
+

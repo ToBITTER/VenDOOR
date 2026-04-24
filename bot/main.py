@@ -6,7 +6,7 @@ Initializes aiogram dispatcher, registers handlers, and starts polling.
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
-from aiogram.types import BotCommandScopeChat, BotCommandScopeDefault
+from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 
 from core.config import get_settings
 from db.session import close_db
@@ -24,9 +24,15 @@ settings = get_settings()
 
 async def set_default_commands(bot: Bot) -> None:
     """
-    Clear bot commands in Telegram to hide the command menu button.
+    Configure bot commands shown in Telegram menu.
     """
-    await bot.set_my_commands([], BotCommandScopeDefault())
+    default_commands = [
+        BotCommand(command="start", description="Open VenDOOR"),
+        BotCommand(command="menu", description="Show main menu"),
+        BotCommand(command="help", description="How VenDOOR works"),
+    ]
+
+    await bot.set_my_commands(default_commands, BotCommandScopeDefault())
 
     if settings.admin_telegram_id:
         try:
@@ -34,10 +40,7 @@ async def set_default_commands(bot: Bot) -> None:
         except (TypeError, ValueError):
             logger.warning("Skipping admin command scope: invalid ADMIN_TELEGRAM_ID")
             return
-        await bot.set_my_commands(
-            [],
-            BotCommandScopeChat(chat_id=admin_chat_id),
-        )
+        await bot.set_my_commands(default_commands, BotCommandScopeChat(chat_id=admin_chat_id))
 
 
 async def on_startup(dispatcher: Dispatcher, bot: Bot) -> None:

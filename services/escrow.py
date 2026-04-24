@@ -3,7 +3,7 @@ Escrow service for managing payment holds and releases.
 Handles state transitions for orders in escrow (PAID → COMPLETED → REFUNDED/RELEASED).
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 import logging
 from sqlalchemy import select
@@ -21,7 +21,7 @@ class EscrowService:
     """
     
     SUCCESS_PAYOUT_STATUSES = {"success", "successful", "completed"}
-    FAILED_PAYOUT_STATUSES = {"failed", "error", "cancelled", "reversed", "declined", "not_authorized"}
+    FAILED_PAYOUT_STATUSES = {"failed", "error", "cancelled", "reversed", "declined"}
     PROCESSING_PAYOUT_STATUSES = {"processing", "pending", "queued", "initiating", "initiated"}
 
     @staticmethod
@@ -39,6 +39,8 @@ class EscrowService:
     @staticmethod
     def normalize_payout_status(raw_status: str | None) -> str:
         status = str(raw_status or "").strip().lower()
+        if status == "not_authorized":
+            return "not_authorized"
         if status in EscrowService.SUCCESS_PAYOUT_STATUSES:
             return "success"
         if status in EscrowService.FAILED_PAYOUT_STATUSES:
@@ -124,7 +126,11 @@ class EscrowService:
             )
 
             if not payout_result.ok:
-                order.seller_payout_status = EscrowService.normalize_payout_status(payout_result.status or "failed")
+                normalized = EscrowService.normalize_payout_status(payout_result.status or "failed")
+                order.seller_payout_status = normalized
+                # Back off auto-release retries when merchant payout permissions are missing.
+                if normalized == "not_authorized":
+                    order.auto_release_scheduled_at = datetime.utcnow() + timedelta(hours=24)
                 logger.error(
                     "Payout failed for order %s ref=%s status=%s message=%s",
                     order.id,
@@ -179,6 +185,8 @@ class EscrowService:
                 return False, "payout_already_successful"
             if normalized == "processing":
                 return False, "payout_already_processing"
+            if normalized == "not_authorized":
+                return False, "korapay_payout_not_authorized"
 
             seller = order.seller
             if not seller or not seller.bank_code or not seller.account_number:
@@ -318,18 +326,17 @@ class EscrowService:
             if order.status in (OrderStatus.PAID, OrderStatus.DISPUTED):
                 order.status = OrderStatus.REFUNDED
                 await session.commit()
-                
-                # TODO: Initiate refund via Korapay
-                # await initiate_refund(order)
-                
-                print(f"Refunded escrow for order {order_id}")
+
+                # Funds movement reversal is provider-specific and should be
+                # executed by admin workflow until API refund is integrated.
+                logger.info("Escrow marked refunded for order %s", order_id)
                 return True
             
             return False
         
-        except Exception as e:
+        except Exception:
             await session.rollback()
-            print(f"Escrow refund error: {e}")
+            logger.exception("Escrow refund error for order %s", order_id)
             return False
 
 

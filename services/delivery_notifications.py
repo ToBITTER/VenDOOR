@@ -1,5 +1,6 @@
 """Delivery notification service for agent assignment and status updates."""
 
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
@@ -9,6 +10,7 @@ from core.config import get_settings
 
 settings = get_settings()
 bot_instance = None  # Will be set by bot initialization
+logger = logging.getLogger(__name__)
 
 
 def _full_name(first_name: str | None, last_name: str | None) -> str:
@@ -100,7 +102,7 @@ async def notify_agent_delivery_assigned(delivery_id: int, session: AsyncSession
                 reply_markup=keyboard,
             )
         except Exception:
-            pass
+            logger.exception("Failed legacy delivery assignment notification delivery_id=%s", delivery_id)
         return
     if not delivery_orders:
         return
@@ -156,17 +158,14 @@ async def notify_agent_delivery_assigned(delivery_id: int, session: AsyncSession
     )
 
     try:
-        sent_message = await bot_instance.send_message(
+        await bot_instance.send_message(
             chat_id=delivery.agent.telegram_id,
             text=message_text,
             parse_mode="HTML",
             reply_markup=keyboard
         )
-
-        # TODO: Store message_id in Delivery model for later edits
-        # For now, we're not tracking this but could add a field for in-place message updates
-    except Exception as e:
-        print(f"Failed to notify agent {delivery.agent.telegram_id}: {e}")
+    except Exception:
+        logger.exception("Failed to notify agent telegram_id=%s delivery_id=%s", delivery.agent.telegram_id, delivery_id)
 
 
 async def notify_buyer_delivery_status_update(
@@ -236,8 +235,8 @@ async def notify_buyer_delivery_status_update(
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
-    except Exception as e:
-        print(f"Failed to notify buyer {order.buyer.telegram_id}: {e}")
+    except Exception:
+        logger.exception("Failed to notify buyer telegram_id=%s for order=%s", order.buyer.telegram_id, order.id)
 
 
 async def notify_buyer_all_pickups_completed(
@@ -284,8 +283,8 @@ async def notify_buyer_all_pickups_completed(
             text=message_text,
             parse_mode="HTML",
         )
-    except Exception as e:
-        print(f"Failed to notify pickup completion buyer {buyer.telegram_id}: {e}")
+    except Exception:
+        logger.exception("Failed pickup-complete notification for buyer=%s delivery=%s", buyer.telegram_id, delivery_id)
 
 
 async def notify_buyer_group_delivery_status_update(
@@ -355,8 +354,13 @@ async def notify_buyer_group_delivery_status_update(
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
-    except Exception as e:
-        print(f"Failed to notify grouped delivery status buyer {buyer.telegram_id}: {e}")
+    except Exception:
+        logger.exception(
+            "Failed grouped delivery status notification for buyer=%s delivery=%s status=%s",
+            buyer.telegram_id,
+            delivery_id,
+            status,
+        )
 
 
 async def update_agent_job_message(message_id: int, delivery_id: int, stage: str, agent_telegram_id: str):
@@ -405,5 +409,5 @@ async def update_agent_job_message(message_id: int, delivery_id: int, stage: str
             parse_mode="HTML",
             reply_markup=keyboard
         )
-    except Exception as e:
-        print(f"Failed to update agent message {message_id}: {e}")
+    except Exception:
+        logger.exception("Failed to update agent message_id=%s delivery_id=%s", message_id, delivery_id)
