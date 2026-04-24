@@ -5,7 +5,6 @@ Buyer catalog and product browsing handler.
 import time
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramRetryAfter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -42,6 +41,13 @@ def _callback_int_suffix(callback_data: str | None, prefix: str) -> int | None:
     if not value.isdigit():
         return None
     return int(value)
+
+
+def _short(text: str, length: int = 28) -> str:
+    clean = (text or "").strip()
+    if len(clean) <= length:
+        return clean
+    return clean[: length - 1].rstrip() + "…"
 
 
 def format_category_label(category: Category, accessory_subcategory: AccessorySubcategory | None = None) -> str:
@@ -118,8 +124,40 @@ def _build_category_page_keyboard(
         )
     if nav_row:
         rows.append(nav_row)
-    rows.append([InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")])
-    rows.append([InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")])
+    rows.append(
+        [
+            InlineKeyboardButton(text="Search Listings", callback_data="catalog_search_start"),
+            InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout"),
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog"),
+            InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu"),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_category_listing_picker_keyboard(
+    category: Category,
+    subcat_token: str,
+    page: int,
+    page_items: list[Listing],
+    start_index: int,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for offset, listing in enumerate(page_items):
+        item_no = start_index + offset + 1
+        label = f"{item_no}. {_short(listing.title)}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"catalog_view_{listing.id}_{category.name}_{subcat_token}_{page}",
+                )
+            ]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -127,9 +165,9 @@ def _build_listing_card_keyboard(listing: Listing) -> InlineKeyboardMarkup:
     if listing.quantity <= 0 or not listing.available:
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="Out of Stock", callback_data="stock_unavailable")],
-                [InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")],
-                [InlineKeyboardButton(text="Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
+            [InlineKeyboardButton(text="Out of Stock", callback_data="stock_unavailable")],
+            [InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")],
+            [InlineKeyboardButton(text="Seller Profile", callback_data=f"seller_profile_{listing.seller_id}")],
             ]
         )
     return InlineKeyboardMarkup(
@@ -144,44 +182,16 @@ def _build_listing_card_keyboard(listing: Listing) -> InlineKeyboardMarkup:
 def _build_category_bottom_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")],
-            [InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")],
+            [
+                InlineKeyboardButton(text="Search Listings", callback_data="catalog_search_start"),
+                InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout"),
+            ],
+            [
+                InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog"),
+                InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu"),
+            ],
         ]
     )
-
-
-async def _send_listing_card(callback: CallbackQuery, listing: Listing, card_text: str) -> None:
-    card_keyboard = _build_listing_card_keyboard(listing)
-    for _ in range(2):
-        try:
-            if listing.image_url:
-                await callback.message.answer_photo(
-                    photo=listing.image_url,
-                    caption=card_text,
-                    parse_mode="HTML",
-                    reply_markup=card_keyboard,
-                )
-            else:
-                await callback.message.answer(
-                    card_text,
-                    parse_mode="HTML",
-                    reply_markup=card_keyboard,
-                )
-            return
-        except TelegramRetryAfter as exc:
-            await safe_answer_callback(
-                callback,
-                text="Too many requests right now, retrying...",
-                show_alert=False,
-            )
-            await time_async_sleep(exc.retry_after)
-
-
-async def time_async_sleep(seconds: float) -> None:
-    # Isolated helper to keep send retries readable.
-    import asyncio
-
-    await asyncio.sleep(seconds)
 
 
 async def _show_category_page(
@@ -214,10 +224,22 @@ async def _show_category_page(
     control_text = (
         f"<b>{format_category_label(category, accessory_subcategory)} Listings</b>\n"
         f"Page {page + 1}/{total_pages} ({len(listings)} total)\n\n"
-        "Each listing is shown below with its own image."
+        "Tap any item below to view full details and add to cart."
     )
     subcat_token = accessory_subcategory.name if accessory_subcategory else "ALL"
-    control_keyboard = _build_category_page_keyboard(category, len(listings), page, subcat_token=subcat_token)
+    control_keyboard = _build_category_page_keyboard(
+        category,
+        len(listings),
+        page,
+        subcat_token=subcat_token,
+    )
+    picker_keyboard = _build_category_listing_picker_keyboard(
+        category,
+        subcat_token,
+        page,
+        page_items,
+        start_index=start,
+    )
     hero = get_category_hero(
         category.name,
         accessory_subcategory.name if accessory_subcategory else None,
@@ -229,30 +251,13 @@ async def _show_category_page(
         parse_mode="HTML",
         reply_markup=control_keyboard,
     )
-
-    for idx, listing in enumerate(page_items, start=start + 1):
-        seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
-        card_text = (
-            f"<b>{idx}. {listing.title}</b>\n\n"
-            f"Listing ID: {listing.listing_code}\n"
-            f"{listing.description}\n\n"
-            f"Category: {format_category_label(category, listing.accessory_subcategory)}\n"
-            f"Price: NGN {listing.buyer_price:,.2f}\n"
-            f"Stock: {'Out of Stock' if listing.quantity <= 0 or not listing.available else f'{listing.quantity} left'}\n"
-            f"Seller: {seller_name}"
-        )
-        await _send_listing_card(callback, listing, card_text)
-
-    await callback.message.answer(
-        "End of this category page.",
-        reply_markup=_build_category_bottom_keyboard(),
-    )
+    await callback.message.answer("Select an item:", reply_markup=picker_keyboard)
 
 
 @router.callback_query(F.data == "browse_catalog")
 async def browse_catalog(callback: CallbackQuery):
     await safe_answer_callback(callback)
-    text = "Browse Catalog\n\nSelect a category to view available products:"
+    text = "<b>Browse Marketplace</b>\n\nSelect a category to see available products:"
     welcome_banner = get_welcome_banner()
     if welcome_banner:
         await safe_replace_with_screen(
@@ -272,7 +277,7 @@ async def catalog_search_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CatalogSearchStates.awaiting_query)
     await safe_replace_with_screen(
         callback,
-        "<b>Search Listings</b>\n\nSend a keyword (title or description).",
+        "<b>Search Listings</b>\n\nSend a keyword (product title or description).",
         parse_mode="HTML",
         reply_markup=_build_category_bottom_keyboard(),
     )
@@ -300,40 +305,80 @@ async def catalog_search_query(message: Message, state: FSMContext, session: Asy
     )
     listings = result.scalars().all()
     if not listings:
-        await message.answer("No matching listings found. Try another keyword.")
+        await message.answer(
+            "No matching listings found. Try another keyword.",
+            reply_markup=_build_category_bottom_keyboard(),
+        )
         return
 
-    await message.answer(
-        f"<b>Search Results</b>\nKeyword: <code>{query_text}</code>\nFound: {len(listings)}",
-        parse_mode="HTML",
-        reply_markup=_build_category_bottom_keyboard(),
-    )
+    rows: list[list[InlineKeyboardButton]] = []
     for idx, listing in enumerate(listings, start=1):
-        seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
-        card_text = (
-            f"<b>{idx}. {listing.title}</b>\n\n"
-            f"Listing ID: {listing.listing_code}\n"
-            f"{listing.description}\n\n"
-            f"Category: {format_category_label(listing.category, listing.accessory_subcategory)}\n"
-            f"Price: NGN {listing.buyer_price:,.2f}\n"
-            f"Stock: {'Out of Stock' if listing.quantity <= 0 or not listing.available else f'{listing.quantity} left'}\n"
-            f"Seller: {seller_name}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{idx}. {_short(listing.title)}",
+                    callback_data=f"search_view_{listing.id}",
+                )
+            ]
         )
-        keyboard = _build_listing_card_keyboard(listing)
-        if listing.image_url:
-            await message.answer_photo(
-                photo=listing.image_url,
-                caption=card_text,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-        else:
-            await message.answer(
-                card_text,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
+    rows.append([InlineKeyboardButton(text="Search Again", callback_data="catalog_search_start")])
+    rows.append([InlineKeyboardButton(text="Checkout Cart", callback_data="cart_checkout")])
+    rows.append(
+        [
+            InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog"),
+            InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu"),
+        ]
+    )
+
+    await message.answer(
+        f"<b>Search Results</b>\nKeyword: <code>{query_text}</code>\nFound: {len(listings)}\n\nTap an item to view details.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
     await state.clear()
+
+
+async def _render_listing_detail(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    listing_id: int,
+    back_callback_data: str,
+) -> None:
+    result = await session.execute(
+        select(Listing)
+        .options(joinedload(Listing.seller).joinedload(SellerProfile.user))
+        .where(Listing.id == listing_id)
+    )
+    listing = result.scalars().first()
+    if not listing:
+        await safe_edit_text(callback, "Listing not found.", reply_markup=get_catalog_categories())
+        return
+
+    seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
+    card_text = (
+        f"<b>{listing.title}</b>\n\n"
+        f"Listing ID: {listing.listing_code}\n"
+        f"{listing.description}\n\n"
+        f"Category: {format_category_label(listing.category, listing.accessory_subcategory)}\n"
+        f"Price: NGN {listing.buyer_price:,.2f}\n"
+        f"Stock: {'Out of Stock' if listing.quantity <= 0 or not listing.available else f'{listing.quantity} left'}\n"
+        f"Seller: {seller_name}"
+    )
+    base_keyboard = _build_listing_card_keyboard(listing).inline_keyboard
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=base_keyboard
+        + [
+            [InlineKeyboardButton(text="Back to Results", callback_data=back_callback_data)],
+            [InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")],
+        ]
+    )
+    await safe_replace_with_screen(
+        callback,
+        card_text,
+        photo=listing.image_url or None,
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
 
 
 @router.callback_query(F.data.startswith("browse_cat_"))
@@ -386,6 +431,41 @@ async def browse_category_page(callback: CallbackQuery, session: AsyncSession):
 
     listings = await _fetch_category_listings(session, category, accessory_subcategory)
     await _show_category_page(callback, category, listings, page=page, accessory_subcategory=accessory_subcategory)
+
+
+@router.callback_query(F.data.startswith("catalog_view_"))
+async def view_listing_from_category(callback: CallbackQuery, session: AsyncSession):
+    await safe_answer_callback(callback)
+    try:
+        _, _, listing_id_str, category_name, subcat_token, page_str = callback.data.split("_", maxsplit=5)
+        listing_id = int(listing_id_str)
+        page = int(page_str)
+        # Validate category token to guard malformed callbacks.
+        _ = Category[category_name]
+        _ = subcat_token
+    except Exception:
+        await safe_edit_text(
+            callback,
+            "Unable to open listing details. Please reopen the category.",
+            reply_markup=get_catalog_categories(),
+        )
+        return
+    back_cb = f"browse_page_{category_name}_{subcat_token}_{page}"
+    await _render_listing_detail(callback, session, listing_id, back_cb)
+
+
+@router.callback_query(F.data.startswith("search_view_"))
+async def view_listing_from_search(callback: CallbackQuery, session: AsyncSession):
+    await safe_answer_callback(callback)
+    listing_id = _callback_int_suffix(callback.data, "search_view_")
+    if listing_id is None:
+        await safe_edit_text(
+            callback,
+            "Unable to open listing details. Please search again.",
+            reply_markup=_build_category_bottom_keyboard(),
+        )
+        return
+    await _render_listing_detail(callback, session, listing_id, "catalog_search_start")
 
 
 @router.callback_query(F.data.startswith("browse_acc_"))
@@ -444,7 +524,10 @@ async def view_seller_profile(callback: CallbackQuery, session: AsyncSession):
         f"<b>Active Listings:</b> {active_listings}\n"
     )
     keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Back to Categories", callback_data="browse_catalog")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
+        ]
     )
     await safe_edit_text(callback, text, parse_mode="HTML", reply_markup=keyboard)
 
