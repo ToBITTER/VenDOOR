@@ -228,7 +228,6 @@ async def _show_category_page(
         seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
         card_text = (
             f"<b>{idx}. {listing.title}</b>\n\n"
-            f"Listing ID: {listing.listing_code}\n"
             f"{listing.description}\n\n"
             f"Category: {format_category_label(category, listing.accessory_subcategory)}\n"
             f"Price: NGN {listing.buyer_price:,.2f}\n"
@@ -359,7 +358,6 @@ async def _render_listing_detail(
     seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
     card_text = (
         f"<b>{listing.title}</b>\n\n"
-        f"Listing ID: {listing.listing_code}\n"
         f"{listing.description}\n\n"
         f"Category: {format_category_label(listing.category, listing.accessory_subcategory)}\n"
         f"Price: NGN {listing.buyer_price:,.2f}\n"
