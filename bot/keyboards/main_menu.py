@@ -9,15 +9,15 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-MENU_BROWSE = "Browse Catalog"
-MENU_CART = "My Cart"
-MENU_ORDERS = "My Orders"
-MENU_SELLER = "Become Seller"
-MENU_DELIVERY = "Delivery Hub"
-MENU_LISTINGS = "My Listings"
-MENU_COMPLAINTS = "Complaints"
-MENU_HELP = "Help"
-MENU_TERMS = "Terms & Conditions"
+MENU_BROWSE = "Browse Marketplace"
+MENU_CART = "Cart"
+MENU_ORDERS = "Orders"
+MENU_SELLER = "Start Selling"
+MENU_DELIVERY = "Delivery Tracking"
+MENU_LISTINGS = "Seller Dashboard"
+MENU_COMPLAINTS = "Report an Issue"
+MENU_HELP = "Support"
+MENU_TERMS = "Terms & Policies"
 
 
 def get_main_menu_inline() -> InlineKeyboardMarkup:
@@ -29,11 +29,13 @@ def get_main_menu_inline() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text=MENU_ORDERS, callback_data="my_orders"),
-                InlineKeyboardButton(text=MENU_SELLER, callback_data="seller_register"),
+                InlineKeyboardButton(text=MENU_DELIVERY, callback_data="delivery_hub"),
             ],
-            [InlineKeyboardButton(text=MENU_DELIVERY, callback_data="delivery_hub")],
             [
+                InlineKeyboardButton(text=MENU_SELLER, callback_data="seller_register"),
                 InlineKeyboardButton(text=MENU_LISTINGS, callback_data="seller_listings"),
+            ],
+            [
                 InlineKeyboardButton(text=MENU_COMPLAINTS, callback_data="complaints"),
                 InlineKeyboardButton(text=MENU_HELP, callback_data="help"),
             ],
@@ -47,8 +49,8 @@ def get_main_menu_reply() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_BROWSE), KeyboardButton(text=MENU_CART)],
-            [KeyboardButton(text=MENU_ORDERS), KeyboardButton(text=MENU_SELLER)],
-            [KeyboardButton(text=MENU_DELIVERY), KeyboardButton(text=MENU_LISTINGS)],
+            [KeyboardButton(text=MENU_ORDERS), KeyboardButton(text=MENU_DELIVERY)],
+            [KeyboardButton(text=MENU_SELLER), KeyboardButton(text=MENU_LISTINGS)],
             [KeyboardButton(text=MENU_COMPLAINTS), KeyboardButton(text=MENU_HELP)],
             [KeyboardButton(text=MENU_TERMS)],
         ],
@@ -79,7 +81,7 @@ def get_catalog_categories() -> InlineKeyboardMarkup:
             for label, callback in categories
         ]
         + [[InlineKeyboardButton(text="Search Listings", callback_data="catalog_search_start")]]
-        + [[InlineKeyboardButton(text="Back", callback_data="back_to_menu")]]
+        + [[InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")]]
     )
     return keyboard
 
@@ -100,9 +102,9 @@ def get_seller_actions() -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Create Listing", callback_data="seller_create_listing")],
-            [InlineKeyboardButton(text="View My Listings", callback_data="seller_listings")],
-            [InlineKeyboardButton(text="Sales Stats", callback_data="seller_stats")],
-            [InlineKeyboardButton(text="Back", callback_data="back_to_menu")],
+            [InlineKeyboardButton(text="Seller Dashboard", callback_data="seller_listings")],
+            [InlineKeyboardButton(text="Sales Analytics", callback_data="seller_stats")],
+            [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
     )
     return keyboard
