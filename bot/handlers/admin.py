@@ -1112,6 +1112,7 @@ async def _send_broadcast(
 
 
 @router.message(Command("admin_tools"))
+@router.message(Command("admin"))
 async def admin_tools(message: Message, state: FSMContext, session: AsyncSession):
     if not await _is_admin(message.from_user.id, session):
         await message.reply("You are not authorized to use this command.")

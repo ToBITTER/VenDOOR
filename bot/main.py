@@ -31,6 +31,10 @@ async def set_default_commands(bot: Bot) -> None:
         BotCommand(command="menu", description="Show main menu"),
         BotCommand(command="help", description="How VenDOOR works"),
     ]
+    admin_commands = default_commands + [
+        BotCommand(command="admin_tools", description="Open admin tools"),
+        BotCommand(command="admin", description="Open admin tools"),
+    ]
 
     await bot.set_my_commands(default_commands, BotCommandScopeDefault())
 
@@ -40,7 +44,7 @@ async def set_default_commands(bot: Bot) -> None:
         except (TypeError, ValueError):
             logger.warning("Skipping admin command scope: invalid ADMIN_TELEGRAM_ID")
             return
-        await bot.set_my_commands(default_commands, BotCommandScopeChat(chat_id=admin_chat_id))
+        await bot.set_my_commands(admin_commands, BotCommandScopeChat(chat_id=admin_chat_id))
 
 
 async def on_startup(dispatcher: Dispatcher, bot: Bot) -> None:
