@@ -20,6 +20,7 @@ __pycache__/
 # Environment
 .env
 .env.local
+.env.example
 
 # Database
 *.db

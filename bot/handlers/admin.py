@@ -110,6 +110,7 @@ def _pending_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Refresh", callback_data="admin_pending_refresh")],
+            [InlineKeyboardButton(text="Back to Moderation", callback_data="admin_group_moderation")],
             [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
             [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
         ]
@@ -131,34 +132,110 @@ def _actions_keyboard(seller_id: int) -> InlineKeyboardMarkup:
 def _admin_tools_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="Overview", callback_data="admin_group_overview")],
+            [
+                InlineKeyboardButton(text="Commerce", callback_data="admin_group_commerce"),
+                InlineKeyboardButton(text="Delivery", callback_data="admin_group_delivery"),
+            ],
+            [
+                InlineKeyboardButton(text="Moderation", callback_data="admin_group_moderation"),
+                InlineKeyboardButton(text="System", callback_data="admin_group_system"),
+            ],
+            [InlineKeyboardButton(text="Danger Zone", callback_data="admin_danger_tools")],
+            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
+def _admin_group_overview_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
                 InlineKeyboardButton(text="Stats", callback_data="admin_stats"),
+                InlineKeyboardButton(text="Flow Health", callback_data="admin_flow_health"),
+            ],
+            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
+def _admin_group_commerce_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
                 InlineKeyboardButton(text="Transactions", callback_data="admin_transactions"),
+                InlineKeyboardButton(text="Tx Logs", callback_data="admin_transaction_logs"),
             ],
             [
                 InlineKeyboardButton(text="Payouts", callback_data="admin_payouts"),
                 InlineKeyboardButton(text="Listings", callback_data="admin_listings"),
             ],
+            [InlineKeyboardButton(text="Vendors", callback_data="admin_vendors")],
+            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
+def _admin_group_delivery_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
-                InlineKeyboardButton(text="Vendors", callback_data="admin_vendors"),
-                InlineKeyboardButton(text="Pending Sellers", callback_data="admin_pending_refresh"),
+                InlineKeyboardButton(text="Track Deliveries", callback_data="admin_delivery_tracking"),
+                InlineKeyboardButton(text="Assign Delivery", callback_data="admin_delivery_assign_picker"),
             ],
-            [InlineKeyboardButton(text="Complaints + IP", callback_data="admin_complaints_ip")],
             [
                 InlineKeyboardButton(text="Delivery Agents", callback_data="admin_delivery_agents"),
                 InlineKeyboardButton(text="Add Agent", callback_data="admin_delivery_agent_add"),
             ],
+            [InlineKeyboardButton(text="Delivery Logs", callback_data="admin_transaction_logs")],
+            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
+def _admin_group_moderation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
-                InlineKeyboardButton(text="Assign Delivery", callback_data="admin_delivery_assign_picker"),
-                InlineKeyboardButton(text="Track Deliveries", callback_data="admin_delivery_tracking"),
+                InlineKeyboardButton(text="Pending Sellers", callback_data="admin_pending_refresh"),
+                InlineKeyboardButton(text="Complaints + IP", callback_data="admin_complaints_ip"),
             ],
+            [InlineKeyboardButton(text="Vendor Privileges", callback_data="admin_privileges_help")],
+            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
+def _admin_group_system_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
-                InlineKeyboardButton(text="Vendor Privileges", callback_data="admin_privileges_help"),
                 InlineKeyboardButton(text="Broadcast", callback_data="admin_broadcast_help"),
+                InlineKeyboardButton(text="Ops Admins", callback_data="admin_ops_admins"),
             ],
-            [InlineKeyboardButton(text="Flow Health", callback_data="admin_flow_health")],
-            [InlineKeyboardButton(text="Ops Admins", callback_data="admin_ops_admins")],
-            [InlineKeyboardButton(text="Danger Zone", callback_data="admin_danger_tools")],
+            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
+            [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
+        ]
+    )
+
+
+def _admin_transaction_logs_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Successful", callback_data="admin_txlog_success"),
+                InlineKeyboardButton(text="Failed", callback_data="admin_txlog_failed"),
+            ],
+            [
+                InlineKeyboardButton(text="Delivered", callback_data="admin_txlog_delivered"),
+                InlineKeyboardButton(text="Awaiting Delivery", callback_data="admin_txlog_awaiting"),
+            ],
+            [InlineKeyboardButton(text="Back to Commerce", callback_data="admin_group_commerce")],
+            [InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")],
             [InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")],
         ]
     )
@@ -563,6 +640,60 @@ async def _render_payouts_text(session: AsyncSession, limit: int = 15) -> str:
     return text
 
 
+async def _render_transaction_logs_text(session: AsyncSession, log_type: str, limit: int = 20) -> str:
+    query = (
+        select(Order)
+        .options(
+            joinedload(Order.buyer),
+            joinedload(Order.seller).joinedload(SellerProfile.user),
+            joinedload(Order.listing),
+            joinedload(Order.delivery),
+        )
+        .order_by(Order.updated_at.desc())
+        .limit(limit)
+    )
+
+    title = "Transaction Logs"
+    if log_type == "success":
+        title = "Transaction Logs - Successful"
+        query = query.where(Order.status.in_((OrderStatus.PAID, OrderStatus.COMPLETED)))
+    elif log_type == "failed":
+        title = "Transaction Logs - Failed"
+        query = query.where(Order.status.in_((OrderStatus.CANCELLED, OrderStatus.REFUNDED)))
+    elif log_type == "delivered":
+        title = "Transaction Logs - Delivered"
+        query = query.where(
+            (Order.status == OrderStatus.COMPLETED)
+            | (Order.delivered_at.is_not(None))
+        )
+    elif log_type == "awaiting":
+        title = "Transaction Logs - Awaiting Delivery"
+        query = query.where(Order.status == OrderStatus.PAID).where(Order.delivered_at.is_(None))
+
+    result = await session.execute(query)
+    orders = result.scalars().all()
+    if not orders:
+        return f"<b>{title}</b>\n\nNo records found."
+
+    text = f"<b>{title} (latest {limit})</b>\n\n"
+    for order in orders:
+        buyer_name = order.buyer.first_name if order.buyer else "Unknown"
+        seller_name = order.seller.user.first_name if order.seller and order.seller.user else "Unknown"
+        listing_title = order.listing.title if order.listing else "Unknown listing"
+        delivery_status = order.delivery.status.value if order.delivery else "N/A"
+        text += (
+            f"<b>Order #{order.id}</b>\n"
+            f"Status: {order.status.value}\n"
+            f"Amount: {order.amount}\n"
+            f"Tx Ref: {order.transaction_ref or 'N/A'}\n"
+            f"Delivery: {delivery_status}\n"
+            f"Buyer: {buyer_name} | Seller: {seller_name}\n"
+            f"Listing: {listing_title[:40]}\n"
+            f"Updated: {order.updated_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+        )
+    return text
+
+
 async def _render_complaints_ip_text(session: AsyncSession, limit: int = 10) -> str:
     total_result = await session.execute(select(func.count(Complaint.id)))
     total = total_result.scalar() or 0
@@ -673,6 +804,7 @@ def _complaints_dashboard_keyboard(complaints: list[Complaint]) -> InlineKeyboar
             )
 
     rows.append([InlineKeyboardButton(text="Refresh", callback_data="admin_complaints_ip")])
+    rows.append([InlineKeyboardButton(text="Back to Moderation", callback_data="admin_group_moderation")])
     rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
     rows.append([InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -725,6 +857,7 @@ async def _payouts_keyboard(session: AsyncSession) -> InlineKeyboardMarkup:
         )
 
     rows.append([InlineKeyboardButton(text="Refresh", callback_data="admin_payouts")])
+    rows.append([InlineKeyboardButton(text="Back to Commerce", callback_data="admin_group_commerce")])
     rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
     rows.append([InlineKeyboardButton(text="Back to Menu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -848,6 +981,7 @@ def _ops_admins_keyboard(admins: list[AdminUser]) -> InlineKeyboardMarkup:
                     )
                 ]
             )
+    rows.append([InlineKeyboardButton(text="Back to System", callback_data="admin_group_system")])
     rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -864,6 +998,7 @@ def _delivery_assign_pick_keyboard(deliveries: list[Delivery]) -> InlineKeyboard
             ]
         )
     rows.append([InlineKeyboardButton(text="Track Deliveries", callback_data="admin_delivery_tracking")])
+    rows.append([InlineKeyboardButton(text="Back to Delivery", callback_data="admin_group_delivery")])
     rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -880,6 +1015,7 @@ def _delivery_assign_agent_keyboard(delivery_id: int, agents: list[DeliveryAgent
             ]
         )
     rows.append([InlineKeyboardButton(text="Back to Assign Delivery", callback_data="admin_delivery_assign_picker")])
+    rows.append([InlineKeyboardButton(text="Back to Delivery", callback_data="admin_group_delivery")])
     rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -906,6 +1042,7 @@ def _delivery_agents_keyboard(agents: list[DeliveryAgent]) -> InlineKeyboardMark
                 ]
             )
     rows.append([InlineKeyboardButton(text="Refresh", callback_data="admin_delivery_agents")])
+    rows.append([InlineKeyboardButton(text="Back to Delivery", callback_data="admin_group_delivery")])
     rows.append([InlineKeyboardButton(text="Back to Admin Tools", callback_data="admin_tools_open")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -981,9 +1118,17 @@ async def admin_tools(message: Message, state: FSMContext, session: AsyncSession
 
     text = (
         "<b>Admin Tools</b>\n\n"
-        "Use the buttons below for admin actions.\n"
-        "Stats, Vendors, Transactions, Listings, Pending Sellers, "
-        "Privileges, Broadcast and Deletes are all here.\n\n"
+        "Use grouped sections for faster navigation:\n"
+        "- Overview\n"
+        "- Commerce\n"
+        "- Delivery\n"
+        "- Moderation\n"
+        "- System\n\n"
+        "Transaction logs now include:\n"
+        "- Successful\n"
+        "- Failed\n"
+        "- Delivered\n"
+        "- Awaiting Delivery\n\n"
         "Delete commands:\n"
         "<code>/delete_listing_LST-ABC12345</code>\n"
         "<code>/delete_vendor_SEL-ABC12345</code>\n"
@@ -1251,26 +1396,140 @@ async def open_admin_tools(callback: CallbackQuery, state: FSMContext, session: 
     await state.clear()
     text = (
         "<b>Admin Tools</b>\n\n"
-        "Available buttons:\n"
-        "- Stats\n"
-        "- Transactions\n"
-        "- Payouts\n"
-        "- Vendors\n"
-        "- Listings\n"
-        "- Complaints + IP\n"
-        "- Delivery Agents\n"
-        "- Pending Sellers\n"
-        "- Flow Health\n"
-        "- Vendor Privileges\n"
-        "- Broadcast\n\n"
-        "Danger Zone contains all delete actions.\n"
-        "Use IDs from admin lists before deleting records."
+        "Tools are grouped for easier navigation:\n"
+        "- Overview\n"
+        "- Commerce\n"
+        "- Delivery\n"
+        "- Moderation\n"
+        "- System\n\n"
+        "Open Commerce or Delivery to view transaction logs:\n"
+        "- Successful\n"
+        "- Failed\n"
+        "- Delivered\n"
+        "- Awaiting Delivery\n\n"
+        "Danger Zone contains delete actions."
     )
     await safe_replace_with_screen(
         callback,
         text,
         parse_mode="HTML",
         reply_markup=_admin_tools_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_group_overview")
+async def admin_group_overview(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        "<b>Overview</b>\n\nPlatform snapshot and flow reliability tools.",
+        parse_mode="HTML",
+        reply_markup=_admin_group_overview_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_group_commerce")
+async def admin_group_commerce(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        (
+            "<b>Commerce</b>\n\n"
+            "Transactions, payouts, vendors, listings, and transaction logs.\n"
+            "Use Tx Logs for successful, failed, delivered, and awaiting-delivery views."
+        ),
+        parse_mode="HTML",
+        reply_markup=_admin_group_commerce_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_group_delivery")
+async def admin_group_delivery(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        "<b>Delivery</b>\n\nTrack jobs, assign agents, and review delivery-focused logs.",
+        parse_mode="HTML",
+        reply_markup=_admin_group_delivery_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_group_moderation")
+async def admin_group_moderation(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        "<b>Moderation</b>\n\nSeller approvals, complaints, and vendor privileges.",
+        parse_mode="HTML",
+        reply_markup=_admin_group_moderation_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_group_system")
+async def admin_group_system(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        "<b>System</b>\n\nBroadcast communications and ops-admin access control.",
+        parse_mode="HTML",
+        reply_markup=_admin_group_system_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_transaction_logs")
+async def admin_transaction_logs(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    await safe_replace_with_screen(
+        callback,
+        (
+            "<b>Transaction Logs</b>\n\n"
+            "Choose a quick filter:\n"
+            "- Successful\n"
+            "- Failed\n"
+            "- Delivered\n"
+            "- Awaiting Delivery"
+        ),
+        parse_mode="HTML",
+        reply_markup=_admin_transaction_logs_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("admin_txlog_"))
+async def admin_transaction_logs_filtered(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+
+    filter_name = (callback.data or "").replace("admin_txlog_", "", 1).strip().lower()
+    if filter_name not in {"success", "failed", "delivered", "awaiting"}:
+        await safe_edit_text(callback, "Invalid log filter.", reply_markup=_admin_transaction_logs_keyboard())
+        return
+
+    text = await _render_transaction_logs_text(session, filter_name)
+    await safe_replace_with_screen(
+        callback,
+        text,
+        parse_mode="HTML",
+        reply_markup=_admin_transaction_logs_keyboard(),
     )
 
 
@@ -1285,7 +1544,7 @@ async def admin_stats(callback: CallbackQuery, session: AsyncSession):
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=_admin_tools_keyboard(),
+        reply_markup=_admin_group_overview_keyboard(),
     )
 
 
@@ -1300,7 +1559,7 @@ async def admin_flow_health(callback: CallbackQuery, session: AsyncSession):
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=_admin_tools_keyboard(),
+        reply_markup=_admin_group_overview_keyboard(),
     )
 
 
@@ -1315,7 +1574,7 @@ async def admin_vendors(callback: CallbackQuery, session: AsyncSession):
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=_admin_tools_keyboard(),
+        reply_markup=_admin_group_commerce_keyboard(),
     )
 
 
@@ -1330,7 +1589,7 @@ async def admin_transactions(callback: CallbackQuery, session: AsyncSession):
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=_admin_tools_keyboard(),
+        reply_markup=_admin_group_commerce_keyboard(),
     )
 
 
@@ -1694,7 +1953,7 @@ async def admin_listings(callback: CallbackQuery, session: AsyncSession):
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=_admin_tools_keyboard(),
+        reply_markup=_admin_group_commerce_keyboard(),
     )
 
 
@@ -1931,7 +2190,7 @@ async def admin_delivery_tracking(callback: CallbackQuery, session: AsyncSession
         callback,
         text,
         parse_mode="HTML",
-        reply_markup=_admin_tools_keyboard(),
+        reply_markup=_admin_group_delivery_keyboard(),
     )
 
 
