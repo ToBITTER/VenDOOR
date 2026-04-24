@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from sqlalchemy import or_, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -85,7 +85,8 @@ async def _fetch_category_listings(
         .where(Listing.category == category)
         .where(Listing.available == True)
         .order_by(
-            Listing.created_at.asc(),
+            desc(SellerProfile.is_featured),
+            Listing.created_at.desc(),
         )
         .limit(200)
     )
@@ -136,28 +137,6 @@ def _build_category_page_keyboard(
             InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu"),
         ]
     )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def _build_category_listing_picker_keyboard(
-    category: Category,
-    subcat_token: str,
-    page: int,
-    page_items: list[Listing],
-    start_index: int,
-) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    for offset, listing in enumerate(page_items):
-        item_no = start_index + offset + 1
-        label = f"{item_no}. {_short(listing.title)}"
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=label,
-                    callback_data=f"catalog_view_{listing.id}_{category.name}_{subcat_token}_{page}",
-                )
-            ]
-        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -224,7 +203,7 @@ async def _show_category_page(
     control_text = (
         f"<b>{format_category_label(category, accessory_subcategory)} Listings</b>\n"
         f"Page {page + 1}/{total_pages} ({len(listings)} total)\n\n"
-        "Tap any item below to view full details and add to cart."
+        "Showing up to 10 listings on this page."
     )
     subcat_token = accessory_subcategory.name if accessory_subcategory else "ALL"
     control_keyboard = _build_category_page_keyboard(
@@ -232,13 +211,6 @@ async def _show_category_page(
         len(listings),
         page,
         subcat_token=subcat_token,
-    )
-    picker_keyboard = _build_category_listing_picker_keyboard(
-        category,
-        subcat_token,
-        page,
-        page_items,
-        start_index=start,
     )
     hero = get_category_hero(
         category.name,
@@ -251,7 +223,37 @@ async def _show_category_page(
         parse_mode="HTML",
         reply_markup=control_keyboard,
     )
-    await callback.message.answer("Select an item:", reply_markup=picker_keyboard)
+
+    for idx, listing in enumerate(page_items, start=start + 1):
+        seller_name = listing.seller.user.first_name if listing.seller and listing.seller.user else "Unknown"
+        card_text = (
+            f"<b>{idx}. {listing.title}</b>\n\n"
+            f"Listing ID: {listing.listing_code}\n"
+            f"{listing.description}\n\n"
+            f"Category: {format_category_label(category, listing.accessory_subcategory)}\n"
+            f"Price: NGN {listing.buyer_price:,.2f}\n"
+            f"Stock: {'Out of Stock' if listing.quantity <= 0 or not listing.available else f'{listing.quantity} left'}\n"
+            f"Seller: {seller_name}"
+        )
+        keyboard = _build_listing_card_keyboard(listing)
+        if listing.image_url:
+            await callback.message.answer_photo(
+                photo=listing.image_url,
+                caption=card_text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        else:
+            await callback.message.answer(
+                card_text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+
+    await callback.message.answer(
+        "End of this page.",
+        reply_markup=_build_category_bottom_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "browse_catalog")
@@ -300,7 +302,7 @@ async def catalog_search_query(message: Message, state: FSMContext, session: Asy
                 Listing.description.ilike(f"%{query_text}%"),
             )
         )
-        .order_by(Listing.created_at.asc())
+        .order_by(desc(Listing.created_at))
         .limit(15)
     )
     listings = result.scalars().all()
