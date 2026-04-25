@@ -34,6 +34,7 @@ async def set_default_commands(bot: Bot) -> None:
     admin_commands = default_commands + [
         BotCommand(command="admin_tools", description="Open admin tools"),
         BotCommand(command="admin", description="Open admin tools"),
+        BotCommand(command="admin_users", description="List all users"),
     ]
 
     await bot.set_my_commands(default_commands, BotCommandScopeDefault())

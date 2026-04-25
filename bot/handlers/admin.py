@@ -217,6 +217,7 @@ def _admin_group_system_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Broadcast Center", callback_data="admin_broadcast_help"),
                 InlineKeyboardButton(text="Ops Admin Access", callback_data="admin_ops_admins"),
             ],
+            [InlineKeyboardButton(text="User Directory", callback_data="admin_users")],
             [InlineKeyboardButton(text="Back to Admin Home", callback_data="admin_tools_open")],
             [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
         ]
@@ -572,6 +573,37 @@ async def _render_vendors_text(session: AsyncSession, limit: int = 10) -> str:
             f"(priority {seller.priority_score})\n"
             f"<b>Listings:</b> {listings_count} | <b>Tx:</b> {transactions_count}\n\n"
         )
+    return text
+
+
+async def _render_users_text(session: AsyncSession, limit: int = 50) -> str:
+    total_result = await session.execute(select(func.count(User.id)))
+    total_users = int(total_result.scalar() or 0)
+
+    result = await session.execute(
+        select(User)
+        .order_by(User.created_at.desc())
+        .limit(limit)
+    )
+    users = result.scalars().all()
+    if not users:
+        return "<b>User Directory</b>\n\nNo users found."
+
+    text = (
+        "<b>User Directory</b>\n\n"
+        f"<b>Total Users:</b> {total_users}\n"
+        f"<b>Showing:</b> latest {len(users)}\n\n"
+    )
+    for user in users:
+        full_name = f"{user.first_name} {user.last_name or ''}".strip()
+        username_line = f"Username: @{user.username}\n" if user.username else "Username: N/A\n"
+        text += (
+            f"<b>User #{user.id}</b>\n"
+            f"Name: {full_name}\n"
+            f"Telegram ID: <code>{user.telegram_id}</code>\n"
+            f"{username_line}"
+        )
+        text += f"Joined: {user.created_at.strftime('%Y-%m-%d %H:%M')}\n\n"
     return text
 
 
@@ -1140,6 +1172,15 @@ async def admin_tools(message: Message, state: FSMContext, session: AsyncSession
     await message.answer(text, parse_mode="HTML", reply_markup=_admin_tools_keyboard())
 
 
+@router.message(Command("admin_users"))
+async def admin_users_command(message: Message, session: AsyncSession):
+    if not await _is_admin(message.from_user.id, session):
+        await message.reply("You are not authorized to use this command.")
+        return
+    text = await _render_users_text(session)
+    await message.answer(text, parse_mode="HTML", reply_markup=_admin_group_system_keyboard())
+
+
 @router.message(Command("pending_sellers"))
 async def pending_sellers(message: Message, session: AsyncSession):
     if not await _is_admin(message.from_user.id, session):
@@ -1488,7 +1529,22 @@ async def admin_group_system(callback: CallbackQuery, session: AsyncSession):
     await safe_answer_callback(callback)
     await safe_replace_with_screen(
         callback,
-        "<b>System & Access</b>\n\nBroadcast communications and ops-admin access control.",
+        "<b>System & Access</b>\n\nBroadcast communications, ops-admin access control, and user directory.",
+        parse_mode="HTML",
+        reply_markup=_admin_group_system_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "admin_users")
+async def admin_users(callback: CallbackQuery, session: AsyncSession):
+    if not await _is_admin(callback.from_user.id, session):
+        await safe_answer_callback(callback, text="Not authorized", show_alert=True)
+        return
+    await safe_answer_callback(callback)
+    text = await _render_users_text(session)
+    await safe_replace_with_screen(
+        callback,
+        text,
         parse_mode="HTML",
         reply_markup=_admin_group_system_keyboard(),
     )
