@@ -265,10 +265,11 @@ async def browse_catalog(callback: CallbackQuery):
             callback,
             text,
             photo=welcome_banner,
+            parse_mode="HTML",
             reply_markup=get_catalog_categories(),
         )
         return
-    await safe_render_text_screen(callback, text, reply_markup=get_catalog_categories())
+    await safe_render_text_screen(callback, text, parse_mode="HTML", reply_markup=get_catalog_categories())
 
 
 @router.callback_query(F.data == "catalog_search_start")
