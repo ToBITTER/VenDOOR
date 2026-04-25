@@ -1081,26 +1081,26 @@ def _delivery_agents_keyboard(agents: list[DeliveryAgent]) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _get_broadcast_recipient_ids(session: AsyncSession, audience: str) -> list[str]:
+async def _get_broadcast_recipients(session: AsyncSession, audience: str) -> list[User]:
     if audience == "all":
-        recipients_query = select(User.telegram_id).where(User.telegram_id.is_not(None)).distinct()
+        recipients_query = select(User).where(User.telegram_id.is_not(None)).distinct()
     elif audience == "buyers":
         recipients_query = (
-            select(User.telegram_id)
+            select(User)
             .join(Order, Order.buyer_id == User.id)
             .where(User.telegram_id.is_not(None))
             .distinct()
         )
     elif audience == "sellers":
         recipients_query = (
-            select(User.telegram_id)
+            select(User)
             .join(SellerProfile, SellerProfile.user_id == User.id)
             .where(User.telegram_id.is_not(None))
             .distinct()
         )
     else:
         recipients_query = (
-            select(User.telegram_id)
+            select(User)
             .join(SellerProfile, SellerProfile.user_id == User.id)
             .where(SellerProfile.verified.is_(True))
             .where(User.telegram_id.is_not(None))
@@ -1108,33 +1108,46 @@ async def _get_broadcast_recipient_ids(session: AsyncSession, audience: str) -> 
         )
 
     recipient_result = await session.execute(recipients_query)
-    return [row[0] for row in recipient_result.all() if row[0]]
+    return recipient_result.scalars().all()
+
+
+def _personalize_broadcast_template(template: str, user: User) -> str:
+    first_name = (user.first_name or "").strip() or "there"
+    return template.replace("{{first_name}}", first_name)
 
 
 async def _send_broadcast(
     bot,
-    recipient_ids: list[str],
+    recipients: list[User],
     message_text: str | None = None,
     photo_file_id: str | None = None,
     caption: str | None = None,
 ) -> tuple[int, int]:
     sent = 0
     failed = 0
-    for telegram_id in recipient_ids:
+    for user in recipients:
         try:
-            chat_id = int(telegram_id)
+            chat_id = int(str(user.telegram_id))
             if photo_file_id:
-                await bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
+                personalized_caption = (
+                    _personalize_broadcast_template(caption, user) if caption else None
+                )
+                await bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=personalized_caption)
             else:
-                await bot.send_message(chat_id=chat_id, text=message_text or "")
+                personalized_text = _personalize_broadcast_template(message_text or "", user)
+                await bot.send_message(chat_id=chat_id, text=personalized_text)
             sent += 1
         except TelegramRetryAfter as exc:
             try:
                 await asyncio.sleep(exc.retry_after)
                 if photo_file_id:
-                    await bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption)
+                    personalized_caption = (
+                        _personalize_broadcast_template(caption, user) if caption else None
+                    )
+                    await bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=personalized_caption)
                 else:
-                    await bot.send_message(chat_id=chat_id, text=message_text or "")
+                    personalized_text = _personalize_broadcast_template(message_text or "", user)
+                    await bot.send_message(chat_id=chat_id, text=personalized_text)
                 sent += 1
             except Exception:
                 failed += 1
@@ -2789,7 +2802,11 @@ async def choose_broadcast_audience(callback: CallbackQuery, state: FSMContext, 
     await state.set_state(AdminStates.awaiting_broadcast_message)
     await safe_replace_with_screen(
         callback,
-        f"Audience selected: <b>{audience}</b>\n\nNow send text or send a photo (caption optional).",
+        (
+            f"Audience selected: <b>{audience}</b>\n\n"
+            "Now send text or send a photo (caption optional).\n"
+            "You can personalize with <code>{{first_name}}</code>."
+        ),
         parse_mode="HTML",
         reply_markup=_delete_help_keyboard(),
     )
@@ -2816,16 +2833,16 @@ async def send_photo_broadcast_from_state(message: Message, state: FSMContext, s
     photo_file_id = message.photo[-1].file_id
     caption = (message.caption or "").strip() or None
 
-    recipient_ids = await _get_broadcast_recipient_ids(session, str(audience))
+    recipients = await _get_broadcast_recipients(session, str(audience))
     sent, failed = await _send_broadcast(
         message.bot,
-        recipient_ids,
+        recipients,
         photo_file_id=photo_file_id,
         caption=caption,
     )
     await state.clear()
     await message.reply(
-        f"Photo broadcast complete.\nAudience: {audience}\nRecipients: {len(recipient_ids)}\n"
+        f"Photo broadcast complete.\nAudience: {audience}\nRecipients: {len(recipients)}\n"
         f"Sent: {sent}\nFailed: {failed}",
         reply_markup=_admin_tools_keyboard(),
     )
@@ -2850,11 +2867,11 @@ async def send_broadcast_from_state(message: Message, state: FSMContext, session
         await message.reply("Session expired. Open /admin_tools and try again.")
         return
 
-    recipient_ids = await _get_broadcast_recipient_ids(session, str(audience))
-    sent, failed = await _send_broadcast(message.bot, recipient_ids, message_text=text)
+    recipients = await _get_broadcast_recipients(session, str(audience))
+    sent, failed = await _send_broadcast(message.bot, recipients, message_text=text)
     await state.clear()
     await message.reply(
-        f"Broadcast complete.\nAudience: {audience}\nRecipients: {len(recipient_ids)}\n"
+        f"Broadcast complete.\nAudience: {audience}\nRecipients: {len(recipients)}\n"
         f"Sent: {sent}\nFailed: {failed}",
         reply_markup=_admin_tools_keyboard(),
     )
