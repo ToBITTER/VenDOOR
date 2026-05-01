@@ -53,6 +53,25 @@ def _resolve_customer_email(user: User, buyer_telegram_id: str) -> str:
 
 
 async def start_checkout(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
+    await safe_answer_callback(callback)
+    await state.clear()
+    await safe_edit_text(
+        callback,
+        (
+            "<b>Checkout Temporarily Unavailable</b>\n\n"
+            "Cannot check out now.\n"
+            "Coming soon...\n\n"
+            "Follow us on Instagram: @vendoorhub"
+        ),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Back to Main Menu", callback_data="back_to_menu")],
+            ]
+        ),
+    )
+    return
+
     data = await state.get_data()
     cart_item_ids = data.get("cart_item_ids") or []
 
@@ -114,7 +133,6 @@ async def start_checkout(callback: CallbackQuery, state: FSMContext, session: As
         )
         await state.update_data(checkout_mode="single")
 
-    await safe_answer_callback(callback)
     if callback.message:
         try:
             await callback.message.delete()
